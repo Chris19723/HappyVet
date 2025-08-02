@@ -2,6 +2,7 @@ import { Link, useLocation } from "wouter";
 import { Heart, LayoutDashboard, Users, Calendar, FileText, Receipt, Package, BarChart3, User, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
+import type { User as UserType } from "@shared/schema";
 
 export default function Sidebar() {
   const [location] = useLocation();
@@ -29,8 +30,12 @@ export default function Sidebar() {
       {/* Logo Section */}
       <div className="p-6 border-b border-slate-200">
         <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
-            <Heart className="w-6 h-6 text-white" />
+          <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center">
+            <img 
+              src="/assets/logo.jpeg" 
+              alt="Happy Animals Logo" 
+              className="w-10 h-10 object-cover rounded-lg"
+            />
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-900">Happy Animals</h1>

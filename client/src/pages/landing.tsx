@@ -9,8 +9,12 @@ export default function Landing() {
         {/* Header */}
         <div className="text-center mb-12">
           <div className="flex items-center justify-center space-x-3 mb-6">
-            <div className="w-16 h-16 bg-primary rounded-xl flex items-center justify-center">
-              <Heart className="w-8 h-8 text-white" />
+            <div className="w-16 h-16 rounded-xl overflow-hidden flex items-center justify-center">
+              <img 
+                src="/assets/logo.jpeg" 
+                alt="Happy Animals Logo" 
+                className="w-16 h-16 object-cover rounded-xl"
+              />
             </div>
             <div>
               <h1 className="text-4xl font-bold text-slate-900">Happy Animals</h1>
