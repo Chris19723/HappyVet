@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, Euro } from "lucide-react";
+import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign } from "lucide-react";
 import type { InvoiceWithDetails } from "@shared/schema";
 import { format } from "date-fns";
 
@@ -152,13 +152,13 @@ export default function Billing() {
             <Card>
               <CardContent className="p-4">
                 <div className="flex items-center space-x-2">
-                  <Euro className="h-8 w-8 text-green-600" />
+                  <DollarSign className="h-8 w-8 text-green-600" />
                   <div>
                     <p className="text-sm font-medium text-slate-600">Total Ingresos</p>
                     <p className="text-2xl font-bold text-slate-900">
-                      €{invoices?.reduce((sum: number, inv: InvoiceWithDetails) => 
+                      ${invoices?.reduce((sum: number, inv: InvoiceWithDetails) => 
                         inv.status === 'paid' ? sum + Number(inv.totalAmount) : sum, 0
-                      ).toFixed(2) || '0.00'}
+                      ).toFixed(2) || '0.00'} MXN
                     </p>
                   </div>
                 </div>
@@ -265,19 +265,19 @@ export default function Billing() {
                           <div>
                             <div className="mb-2">
                               <span className="font-medium">Subtotal:</span>
-                              <span className="ml-2">€{Number(invoice.subtotal).toFixed(2)}</span>
+                              <span className="ml-2">${Number(invoice.subtotal).toFixed(2)} MXN</span>
                             </div>
                             
                             {Number(invoice.taxAmount) > 0 && (
                               <div className="mb-2">
                                 <span className="font-medium">IVA:</span>
-                                <span className="ml-2">€{Number(invoice.taxAmount).toFixed(2)}</span>
+                                <span className="ml-2">${Number(invoice.taxAmount).toFixed(2)} MXN</span>
                               </div>
                             )}
                             
                             <div className="text-lg font-semibold">
                               <span className="font-medium">Total:</span>
-                              <span className="ml-2">€{Number(invoice.totalAmount).toFixed(2)}</span>
+                              <span className="ml-2">${Number(invoice.totalAmount).toFixed(2)} MXN</span>
                             </div>
                           </div>
                         </div>
@@ -291,7 +291,7 @@ export default function Billing() {
                                   <span>
                                     {item.description} x{item.quantity}
                                   </span>
-                                  <span>€{Number(item.totalPrice).toFixed(2)}</span>
+                                  <span>${Number(item.totalPrice).toFixed(2)} MXN</span>
                                 </div>
                               ))}
                             </div>

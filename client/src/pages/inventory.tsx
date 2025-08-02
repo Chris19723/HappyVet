@@ -414,7 +414,7 @@ export default function Inventory() {
                         name="unitPrice"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Precio Unitario (€)</FormLabel>
+                            <FormLabel>Precio Unitario (MXN)</FormLabel>
                             <FormControl>
                               <Input 
                                 type="number" 
@@ -554,7 +554,7 @@ export default function Inventory() {
                         {item.unitPrice && (
                           <div className="flex justify-between text-sm">
                             <span className="font-medium">Precio:</span>
-                            <span>€{Number(item.unitPrice).toFixed(2)}</span>
+                            <span>${Number(item.unitPrice).toFixed(2)} MXN</span>
                           </div>
                         )}
                         

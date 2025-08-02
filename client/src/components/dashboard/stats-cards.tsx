@@ -1,5 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { Calendar, Heart, Euro, AlertTriangle } from "lucide-react";
+import { Calendar, Heart, DollarSign, AlertTriangle } from "lucide-react";
 
 interface StatsCardsProps {
   stats?: {
@@ -47,9 +47,9 @@ export default function StatsCards({ stats, isLoading }: StatsCardsProps) {
     },
     {
       title: "Ingresos Mensuales",
-      value: `€${(Number(stats?.monthlyRevenue) || 0).toFixed(2)}`,
+      value: `$${(Number(stats?.monthlyRevenue) || 0).toFixed(2)} MXN`,
       change: "+8.2% vs mes anterior",
-      icon: Euro,
+      icon: DollarSign,
       color: "text-warning",
       bgColor: "bg-warning/10",
     },
