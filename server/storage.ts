@@ -613,10 +613,10 @@ export class DatabaseStorage implements IStorage {
       );
 
     return {
-      todayAppointments: todayAppointmentsResult.count,
-      activePatients: activePatientsResult.count,
-      monthlyRevenue: monthlyRevenueResult.total,
-      lowStock: lowStockResult.count,
+      todayAppointments: Number(todayAppointmentsResult.count),
+      activePatients: Number(activePatientsResult.count),
+      monthlyRevenue: Number(monthlyRevenueResult.total),
+      lowStock: Number(lowStockResult.count),
     };
   }
 }

@@ -47,7 +47,7 @@ export default function StatsCards({ stats, isLoading }: StatsCardsProps) {
     },
     {
       title: "Ingresos Mensuales",
-      value: `€${stats?.monthlyRevenue?.toFixed(2) ?? "0.00"}`,
+      value: `€${(Number(stats?.monthlyRevenue) || 0).toFixed(2)}`,
       change: "+8.2% vs mes anterior",
       icon: Euro,
       color: "text-warning",
