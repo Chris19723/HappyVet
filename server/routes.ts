@@ -13,6 +13,11 @@ import {
   insertInventoryItemSchema,
 } from "@shared/schema";
 import { z } from "zod";
+import {
+  ObjectStorageService,
+  ObjectNotFoundError,
+} from "./objectStorage.js";
+import { ObjectPermission } from "./objectAcl.js";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
@@ -411,6 +416,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating inventory item:", error);
       res.status(500).json({ message: "Failed to update inventory item" });
+    }
+  });
+
+  // Object storage routes for photos
+  app.get("/objects/:objectPath(*)", isAuthenticated, async (req, res) => {
+    const userId = (req.user as any)?.claims?.sub;
+    const objectStorageService = new ObjectStorageService();
+    try {
+      const objectFile = await objectStorageService.getObjectEntityFile(
+        req.path,
+      );
+      const canAccess = await objectStorageService.canAccessObjectEntity({
+        objectFile,
+        userId: userId,
+        requestedPermission: ObjectPermission.READ,
+      });
+      if (!canAccess) {
+        return res.sendStatus(401);
+      }
+      objectStorageService.downloadObject(objectFile, res);
+    } catch (error) {
+      console.error("Error checking object access:", error);
+      if (error instanceof ObjectNotFoundError) {
+        return res.sendStatus(404);
+      }
+      return res.sendStatus(500);
+    }
+  });
+
+  app.post("/api/objects/upload", isAuthenticated, async (req, res) => {
+    const objectStorageService = new ObjectStorageService();
+    const uploadURL = await objectStorageService.getObjectEntityUploadURL();
+    res.json({ uploadURL });
+  });
+
+  app.put("/api/patient-photos", isAuthenticated, async (req, res) => {
+    if (!req.body.patientId || !req.body.photoURL) {
+      return res.status(400).json({ error: "patientId and photoURL are required" });
+    }
+
+    const userId = (req.user as any)?.claims?.sub;
+
+    try {
+      const objectStorageService = new ObjectStorageService();
+      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
+        req.body.photoURL,
+        {
+          owner: userId,
+          visibility: "private", // Patient photos should be private
+        },
+      );
+
+      // Update patient with photo path
+      await storage.updatePatient(req.body.patientId, { photoUrl: objectPath });
+
+      res.status(200).json({
+        objectPath: objectPath,
+      });
+    } catch (error) {
+      console.error("Error setting patient photo:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.put("/api/owner-photos", isAuthenticated, async (req, res) => {
+    if (!req.body.ownerId || !req.body.photoURL) {
+      return res.status(400).json({ error: "ownerId and photoURL are required" });
+    }
+
+    const userId = (req.user as any)?.claims?.sub;
+
+    try {
+      const objectStorageService = new ObjectStorageService();
+      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
+        req.body.photoURL,
+        {
+          owner: userId,
+          visibility: "private", // Owner photos should be private
+        },
+      );
+
+      // Update owner with photo path
+      await storage.updateOwner(req.body.ownerId, { photoUrl: objectPath });
+
+      res.status(200).json({
+        objectPath: objectPath,
+      });
+    } catch (error) {
+      console.error("Error setting owner photo:", error);
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 

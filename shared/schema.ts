@@ -49,6 +49,7 @@ export const owners = pgTable("owners", {
   address: text("address"),
   city: varchar("city"),
   postalCode: varchar("postal_code"),
+  photoUrl: varchar("photo_url"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

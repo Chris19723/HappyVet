@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -10,8 +10,11 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ObjectUploader } from "@/components/ObjectUploader";
 import { insertPatientSchema, type PatientWithOwner, type InsertPatient } from "@shared/schema";
+import { Camera, User } from "lucide-react";
 import type { z } from "zod";
+import type { UploadResult } from "@uppy/core";
 
 const formSchema = insertPatientSchema.extend({
   birthDate: insertPatientSchema.shape.birthDate.optional(),
@@ -27,6 +30,9 @@ interface PatientFormProps {
 
 export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
   const { toast } = useToast();
+  const [patientPhotoUrl, setPatientPhotoUrl] = useState<string | null>(null);
+  const [ownerPhotoUrl, setOwnerPhotoUrl] = useState<string | null>(null);
+  const [selectedOwner, setSelectedOwner] = useState<any>(null);
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -127,16 +133,106 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     },
   });
 
-  const onSubmit = (data: FormData) => {
+  // Photo upload handlers
+  const getUploadParameters = async () => {
+    const response = await apiRequest("POST", "/api/objects/upload") as any;
+    return {
+      method: "PUT" as const,
+      url: response.uploadURL,
+    };
+  };
+
+  const handlePatientPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
+    if (result.successful && result.successful.length > 0) {
+      const uploadedFile = result.successful[0] as any;
+      setPatientPhotoUrl(uploadedFile.uploadURL || null);
+    }
+  };
+
+  const handleOwnerPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
+    if (result.successful && result.successful.length > 0) {
+      const uploadedFile = result.successful[0] as any;
+      setOwnerPhotoUrl(uploadedFile.uploadURL || null);
+    }
+  };
+
+  const savePhotos = async (patientId: string, ownerId: string) => {
+    try {
+      // Save patient photo if uploaded
+      if (patientPhotoUrl) {
+        await apiRequest("PUT", "/api/patient-photos", {
+          patientId,
+          photoURL: patientPhotoUrl,
+        });
+      }
+
+      // Save owner photo if uploaded
+      if (ownerPhotoUrl) {
+        await apiRequest("PUT", "/api/owner-photos", {
+          ownerId,
+          photoURL: ownerPhotoUrl,
+        });
+      }
+    } catch (error) {
+      console.error("Error saving photos:", error);
+      toast({
+        title: "Warning",
+        description: "Patient saved but there was an issue saving photos",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const onSubmit = async (data: FormData) => {
     const submitData: InsertPatient = {
       ...data,
       weight: data.weight ? data.weight.toString() : null,
     };
 
     if (patient) {
-      updateMutation.mutate(submitData);
+      updateMutation.mutate(submitData, {
+        onSuccess: () => {
+          // Save photos after successful update
+          if (patientPhotoUrl || ownerPhotoUrl) {
+            savePhotos(patient.id, data.ownerId);
+          }
+        }
+      });
     } else {
-      createMutation.mutate(submitData);
+      // For new patients, we need to get the created patient ID first
+      try {
+        const newPatient = await apiRequest("POST", "/api/patients", submitData) as any;
+        
+        // Save photos if any were uploaded
+        if (patientPhotoUrl || ownerPhotoUrl) {
+          await savePhotos(newPatient.id, data.ownerId);
+        }
+
+        queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+        toast({
+          title: "Success",
+          description: "Patient created successfully",
+        });
+        onSuccess();
+      } catch (error) {
+        if (isUnauthorizedError(error as Error)) {
+          toast({
+            title: "Unauthorized",
+            description: "You are logged out. Logging in again...",
+            variant: "destructive",
+          });
+          setTimeout(() => {
+            window.location.href = "/api/login";
+          }, 500);
+          return;
+        }
+        toast({
+          title: "Error",
+          description: "Failed to create patient",
+          variant: "destructive",
+        });
+      }
     }
   };
 
@@ -170,11 +266,11 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
                       <SelectValue placeholder="Seleccionar propietario" />
                     </SelectTrigger>
                     <SelectContent>
-                      {owners?.map((owner: any) => (
+                      {(owners as any[])?.map((owner: any) => (
                         <SelectItem key={owner.id} value={owner.id}>
                           {owner.firstName} {owner.lastName}
                         </SelectItem>
-                      ))}
+                      )) || []}
                     </SelectContent>
                   </Select>
                 </FormControl>
@@ -218,7 +314,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Raza</FormLabel>
                 <FormControl>
-                  <Input placeholder="Ej: Golden Retriever" {...field} />
+                  <Input placeholder="Ej: Golden Retriever" {...field} value={field.value || ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -234,7 +330,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Color</FormLabel>
                 <FormControl>
-                  <Input placeholder="Ej: Dorado, Negro" {...field} />
+                  <Input placeholder="Ej: Dorado, Negro" {...field} value={field.value || ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -314,12 +410,104 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
                 <Textarea 
                   placeholder="Información adicional sobre el paciente..."
                   {...field}
+                  value={field.value || ""}
                 />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
+
+        {/* Photo Upload Sections */}
+        <div className="space-y-6 p-4 border rounded-lg bg-muted/50">
+          <h3 className="text-lg font-medium mb-4">Fotografías</h3>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Patient Photo Upload */}
+            <div className="space-y-2">
+              <FormLabel>Foto del Paciente</FormLabel>
+              <div className="flex flex-col items-center space-y-3">
+                {patientPhotoUrl ? (
+                  <div className="relative">
+                    <img 
+                      src={patientPhotoUrl} 
+                      alt="Foto del paciente" 
+                      className="w-32 h-32 object-cover rounded-lg border"
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      className="absolute -top-2 -right-2"
+                      onClick={() => setPatientPhotoUrl(null)}
+                    >
+                      ×
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="w-32 h-32 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center">
+                    <Camera className="w-8 h-8 text-gray-400" />
+                  </div>
+                )}
+                
+                <ObjectUploader
+                  maxNumberOfFiles={1}
+                  maxFileSize={10485760} // 10MB
+                  onGetUploadParameters={getUploadParameters}
+                  onComplete={handlePatientPhotoComplete}
+                  buttonClassName="w-full"
+                >
+                  <div className="flex items-center gap-2">
+                    <Camera className="w-4 h-4" />
+                    <span>{patientPhotoUrl ? "Cambiar foto" : "Subir foto del paciente"}</span>
+                  </div>
+                </ObjectUploader>
+              </div>
+            </div>
+
+            {/* Owner Photo Upload */}
+            <div className="space-y-2">
+              <FormLabel>Foto del Propietario</FormLabel>
+              <div className="flex flex-col items-center space-y-3">
+                {ownerPhotoUrl ? (
+                  <div className="relative">
+                    <img 
+                      src={ownerPhotoUrl} 
+                      alt="Foto del propietario" 
+                      className="w-32 h-32 object-cover rounded-lg border"
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      className="absolute -top-2 -right-2"
+                      onClick={() => setOwnerPhotoUrl(null)}
+                    >
+                      ×
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="w-32 h-32 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center">
+                    <User className="w-8 h-8 text-gray-400" />
+                  </div>
+                )}
+                
+                <ObjectUploader
+                  maxNumberOfFiles={1}
+                  maxFileSize={10485760} // 10MB
+                  onGetUploadParameters={getUploadParameters}
+                  onComplete={handleOwnerPhotoComplete}
+                  buttonClassName="w-full"
+                >
+                  <div className="flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    <span>{ownerPhotoUrl ? "Cambiar foto" : "Subir foto del propietario"}</span>
+                  </div>
+                </ObjectUploader>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div className="flex justify-end space-x-2">
           <Button type="button" variant="outline" onClick={onSuccess}>
