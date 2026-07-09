@@ -73,7 +73,11 @@ export async function setupAuth(app: Express) {
   ) => {
     const user = {};
     updateUserSession(user, tokens);
-    await upsertUser(tokens.claims());
+    try {
+      await upsertUser(tokens.claims());
+    } catch (err) {
+      console.warn("[auth] upsertUser failed (DB unavailable), continuing without persisting user:", (err as Error).message);
+    }
     verified(null, user);
   };
 

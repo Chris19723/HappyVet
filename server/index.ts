@@ -2,6 +2,14 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
+// Prevent DB errors from crashing the process
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection] caught:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException] caught:", err.message);
+});
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
