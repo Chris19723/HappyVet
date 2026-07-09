@@ -1,0 +1,1 @@
+- [Neon-to-Helium DB migration](database-migration-neon-to-helium.md) — DB is Helium (standard Postgres); must use pg driver, not @neondatabase/serverless. If auth fails, stale external DATABASE_URL Secret is the cause.
