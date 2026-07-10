@@ -19,6 +19,29 @@ import {
 } from "./objectStorage.js";
 import { ObjectPermission } from "./objectAcl.js";
 
+function normalizeDateOnlyFields<T extends Record<string, any>>(data: T, fields: string[]): T {
+  const normalized: Record<string, any> = { ...data };
+  for (const field of fields) {
+    if (normalized[field] === "") {
+      normalized[field] = null;
+    }
+  }
+  return normalized as T;
+}
+
+function normalizeDateTimeFields<T extends Record<string, any>>(data: T, fields: string[]): T {
+  const normalized: Record<string, any> = { ...data };
+  for (const field of fields) {
+    const value = normalized[field];
+    if (value === "") {
+      normalized[field] = null;
+    } else if (typeof value === "string") {
+      normalized[field] = new Date(value);
+    }
+  }
+  return normalized as T;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
   await setupAuth(app);
@@ -154,7 +177,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/patients", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertPatientSchema.parse(req.body);
+      const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
+      const validatedData = insertPatientSchema.parse(payload);
       const patient = await storage.createPatient(validatedData);
       res.status(201).json(patient);
     } catch (error) {
@@ -168,7 +192,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.put("/api/patients/:id", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertPatientSchema.partial().parse(req.body);
+      const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
+      const validatedData = insertPatientSchema.partial().parse(payload);
       const patient = await storage.updatePatient(req.params.id, validatedData);
       res.json(patient);
     } catch (error) {
@@ -216,7 +241,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/appointments", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertAppointmentSchema.parse(req.body);
+      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
+      const validatedData = insertAppointmentSchema.parse(payload);
       const appointment = await storage.createAppointment(validatedData);
       res.status(201).json(appointment);
     } catch (error) {
@@ -230,7 +256,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.put("/api/appointments/:id", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertAppointmentSchema.partial().parse(req.body);
+      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
+      const validatedData = insertAppointmentSchema.partial().parse(payload);
       const appointment = await storage.updateAppointment(req.params.id, validatedData);
       res.json(appointment);
     } catch (error) {
@@ -338,7 +365,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/invoices", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertInvoiceSchema.parse(req.body);
+      const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
+      const validatedData = insertInvoiceSchema.parse(payload);
       // Generate invoice number
       const invoiceNumber = `INV-${Date.now()}`;
       const invoiceData = { ...validatedData, invoiceNumber };
@@ -355,7 +383,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.put("/api/invoices/:id", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertInvoiceSchema.partial().parse(req.body);
+      const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
+      const validatedData = insertInvoiceSchema.partial().parse(payload);
       const invoice = await storage.updateInvoice(req.params.id, validatedData);
       res.json(invoice);
     } catch (error) {

@@ -146,14 +146,14 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
   const handlePatientPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
     if (result.successful && result.successful.length > 0) {
       const uploadedFile = result.successful[0] as any;
-      setPatientPhotoUrl(uploadedFile.uploadURL || null);
+      setPatientPhotoUrl(uploadedFile.response?.uploadURL || uploadedFile.uploadURL || null);
     }
   };
 
   const handleOwnerPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
     if (result.successful && result.successful.length > 0) {
       const uploadedFile = result.successful[0] as any;
-      setOwnerPhotoUrl(uploadedFile.uploadURL || null);
+      setOwnerPhotoUrl(uploadedFile.response?.uploadURL || uploadedFile.uploadURL || null);
     }
   };
 
