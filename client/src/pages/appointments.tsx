@@ -7,20 +7,25 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import Sidebar from "@/components/layout/sidebar";
 import Header from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Search, Edit, Trash2, Calendar, Clock, User } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { Plus, Search, Edit, Trash2, Calendar as CalendarIcon, Clock, User, ChevronLeft, ChevronRight } from "lucide-react";
 import AppointmentForm from "@/components/forms/appointment-form";
 import type { AppointmentWithDetails } from "@shared/schema";
-import { format } from "date-fns";
+import { format, isSameDay, addDays, subDays, isToday } from "date-fns";
+import { es } from "date-fns/locale";
 
 export default function Appointments() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<AppointmentWithDetails | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
 
@@ -51,8 +56,8 @@ export default function Appointments() {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/today-appointments"] });
       toast({
-        title: "Success",
-        description: "Appointment deleted successfully",
+        title: "Cita eliminada",
+        description: "La cita se eliminó correctamente.",
       });
     },
     onError: (error) => {
@@ -69,7 +74,7 @@ export default function Appointments() {
       }
       toast({
         title: "Error",
-        description: "Failed to delete appointment",
+        description: "No se pudo eliminar la cita.",
         variant: "destructive",
       });
     },
@@ -87,61 +92,69 @@ export default function Appointments() {
     return null;
   }
 
-  const filteredAppointments = appointments?.filter((appointment: AppointmentWithDetails) =>
-    appointment.patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    appointment.patient.owner.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    appointment.patient.owner.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    appointment.reason.toLowerCase().includes(searchTerm.toLowerCase())
-  ) || [];
+  const filteredAppointments = (appointments as AppointmentWithDetails[] | undefined)?.filter((appointment) => {
+    const matchesDate = isSameDay(new Date(appointment.appointmentDate), selectedDate);
+    const matchesSearch =
+      appointment.patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appointment.patient.owner.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appointment.patient.owner.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appointment.reason.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchesDate && matchesSearch;
+  }) || [];
 
-  const getStatusColor = (status: string) => {
-    const colors = {
+  const formattedDate = format(selectedDate, "EEEE d 'de' MMMM, yyyy", { locale: es });
+  const formattedDateCapitalized = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+  const getStatusColor = (status: string | null) => {
+    const colors: Record<string, string> = {
       scheduled: "bg-blue-100 text-blue-800",
       confirmed: "bg-green-100 text-green-800",
       "in-progress": "bg-yellow-100 text-yellow-800",
       completed: "bg-gray-100 text-gray-800",
       cancelled: "bg-red-100 text-red-800",
     };
-    return colors[status as keyof typeof colors] || colors.scheduled;
+    return colors[status ?? "scheduled"] || colors.scheduled;
   };
 
-  const getStatusLabel = (status: string) => {
-    const labels = {
+  const getStatusLabel = (status: string | null) => {
+    const labels: Record<string, string> = {
       scheduled: "Programada",
       confirmed: "Confirmada",
       "in-progress": "En Progreso",
       completed: "Completada",
       cancelled: "Cancelada",
     };
-    return labels[status as keyof typeof labels] || status;
+    return labels[status ?? "scheduled"] || status || "Programada";
   };
 
-  const getInitials = (name: string) => {
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-  };
+  const getInitials = (name: string) =>
+    name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 
   return (
     <div className="min-h-screen flex bg-slate-50">
       <Sidebar />
       <main className="flex-1 overflow-auto">
-        <Header 
-          title="Citas" 
+        <Header
+          title="Citas"
           subtitle="Gestión de citas y programación de consultas"
         />
-        
+
         <div className="p-6">
-          {/* Search and Actions */}
-          <div className="flex flex-col sm:flex-row gap-4 mb-6">
+          {/* Search and New appointment */}
+          <div className="flex flex-col sm:flex-row gap-4 mb-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
               <Input
-                placeholder="Buscar citas por paciente, propietario o motivo..."
+                placeholder="Buscar por paciente, propietario o motivo..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
               />
             </div>
-            <Dialog open={isFormOpen} onOpenChange={setIsFormOpen}>
+            <Dialog open={isFormOpen} onOpenChange={(open) => {
+              setIsFormOpen(open);
+              if (!open) setSelectedAppointment(null);
+            }}>
               <DialogTrigger asChild>
                 <Button className="whitespace-nowrap">
                   <Plus className="h-4 w-4 mr-2" />
@@ -165,13 +178,79 @@ export default function Appointments() {
             </Dialog>
           </div>
 
-          {/* Appointments List */}
+          {/* Date navigation bar */}
+          <Card className="mb-6">
+            <CardContent className="py-3 px-4">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1 sm:gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedDate((d) => subDays(d, 1))}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    <span className="hidden sm:inline">Anterior</span>
+                  </Button>
+
+                  <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        className="font-semibold text-slate-800 hover:bg-slate-100 px-2 sm:px-3 text-sm sm:text-base gap-2"
+                      >
+                        <CalendarIcon className="h-4 w-4 text-slate-500 shrink-0" />
+                        <span>{formattedDateCapitalized}</span>
+                        {isToday(selectedDate) && (
+                          <Badge className="bg-primary text-white text-xs py-0 px-1.5">Hoy</Badge>
+                        )}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={selectedDate}
+                        onSelect={(date) => {
+                          if (date) {
+                            setSelectedDate(date);
+                            setCalendarOpen(false);
+                          }
+                        }}
+                        initialFocus
+                        locale={es}
+                      />
+                    </PopoverContent>
+                  </Popover>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedDate((d) => addDays(d, 1))}
+                  >
+                    <span className="hidden sm:inline">Siguiente</span>
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                {!isToday(selectedDate) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setSelectedDate(new Date())}
+                  >
+                    Hoy
+                  </Button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Appointments list */}
           {appointmentsLoading ? (
             <div className="space-y-4">
-              {[...Array(5)].map((_, i) => (
+              {[...Array(4)].map((_, i) => (
                 <Card key={i} className="animate-pulse">
                   <CardContent className="p-6">
-                    <div className="h-4 bg-slate-200 rounded mb-2"></div>
+                    <div className="h-4 bg-slate-200 rounded mb-2 w-1/2"></div>
                     <div className="h-3 bg-slate-200 rounded w-2/3"></div>
                   </CardContent>
                 </Card>
@@ -180,28 +259,37 @@ export default function Appointments() {
           ) : error ? (
             <Card>
               <CardContent className="p-6 text-center">
-                <p className="text-slate-600">Error loading appointments. Please try again.</p>
+                <p className="text-slate-600">Error al cargar las citas. Intenta de nuevo.</p>
               </CardContent>
             </Card>
           ) : filteredAppointments.length === 0 ? (
             <Card>
-              <CardContent className="p-6 text-center">
-                <Calendar className="h-12 w-12 text-slate-400 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-slate-900 mb-2">No appointments found</h3>
-                <p className="text-slate-600 mb-4">
-                  {searchTerm ? "No appointments match your search criteria." : "Start by scheduling your first appointment."}
+              <CardContent className="p-10 text-center">
+                <CalendarIcon className="h-12 w-12 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-slate-700 mb-1">
+                  {searchTerm
+                    ? "Sin resultados para la búsqueda"
+                    : "Sin citas para este día"}
+                </h3>
+                <p className="text-slate-500 mb-4 text-sm">
+                  {searchTerm
+                    ? "Prueba con otros términos o limpia el filtro de texto."
+                    : `No hay citas programadas para el ${formattedDateCapitalized}.`}
                 </p>
                 {!searchTerm && (
                   <Button onClick={() => setIsFormOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
-                    Schedule First Appointment
+                    Agendar cita
                   </Button>
                 )}
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
-              {filteredAppointments.map((appointment: AppointmentWithDetails) => (
+              <p className="text-sm text-slate-500">
+                {filteredAppointments.length} cita{filteredAppointments.length !== 1 ? "s" : ""} para este día
+              </p>
+              {filteredAppointments.map((appointment) => (
                 <Card key={appointment.id} className="hover:shadow-lg transition-shadow">
                   <CardContent className="p-6">
                     <div className="flex items-start justify-between">
@@ -212,7 +300,7 @@ export default function Appointments() {
                             {getInitials(appointment.patient.name)}
                           </AvatarFallback>
                         </Avatar>
-                        
+
                         <div className="flex-1">
                           <div className="flex items-center space-x-3 mb-2">
                             <h3 className="text-lg font-semibold text-slate-900">
@@ -222,7 +310,7 @@ export default function Appointments() {
                               {getStatusLabel(appointment.status)}
                             </Badge>
                           </div>
-                          
+
                           <div className="space-y-1 text-sm text-slate-600">
                             <div className="flex items-center space-x-2">
                               <User className="h-4 w-4" />
@@ -230,28 +318,21 @@ export default function Appointments() {
                                 {appointment.patient.owner.firstName} {appointment.patient.owner.lastName}
                               </span>
                             </div>
-                            
-                            <div className="flex items-center space-x-2">
-                              <Calendar className="h-4 w-4" />
-                              <span>
-                                {format(new Date(appointment.appointmentDate), "PPP")}
-                              </span>
-                            </div>
-                            
+
                             <div className="flex items-center space-x-2">
                               <Clock className="h-4 w-4" />
                               <span>
-                                {format(new Date(appointment.appointmentDate), "p")}
-                                {appointment.duration && ` (${appointment.duration} min)`}
+                                {format(new Date(appointment.appointmentDate), "HH:mm")}
+                                {appointment.duration && ` · ${appointment.duration} min`}
                               </span>
                             </div>
                           </div>
-                          
+
                           <div className="mt-3">
                             <p className="font-medium text-slate-900">Motivo:</p>
                             <p className="text-slate-600">{appointment.reason}</p>
                           </div>
-                          
+
                           {appointment.notes && (
                             <div className="mt-2">
                               <p className="font-medium text-slate-900">Notas:</p>
@@ -260,8 +341,8 @@ export default function Appointments() {
                           )}
                         </div>
                       </div>
-                      
-                      <div className="flex space-x-2">
+
+                      <div className="flex space-x-2 ml-4 shrink-0">
                         <Button
                           variant="outline"
                           size="sm"
