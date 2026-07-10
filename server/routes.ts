@@ -194,6 +194,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
       const validatedData = insertPatientSchema.partial().parse(payload);
+      // Never overwrite a FK field with an empty string — ignore it so the
+      // existing value is preserved (happens when photo-save triggers a partial update)
+      if (!validatedData.ownerId) delete (validatedData as any).ownerId;
       const patient = await storage.updatePatient(req.params.id, validatedData);
       res.json(patient);
     } catch (error) {
@@ -239,14 +242,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Schema that coerces appointmentDate from ISO string or Date
+  const appointmentCoercedSchema = insertAppointmentSchema.extend({
+    appointmentDate: z.coerce.date(),
+  });
+
   app.post("/api/appointments", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
-      const validatedData = insertAppointmentSchema.parse(payload);
+      const validatedData = appointmentCoercedSchema.parse(req.body);
       const appointment = await storage.createAppointment(validatedData);
       res.status(201).json(appointment);
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.error("Appointment validation error:", JSON.stringify(error.errors));
         return res.status(400).json({ message: "Validation error", errors: error.errors });
       }
       console.error("Error creating appointment:", error);
@@ -256,8 +264,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.put("/api/appointments/:id", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
-      const validatedData = insertAppointmentSchema.partial().parse(payload);
+      const validatedData = appointmentCoercedSchema.partial().parse(req.body);
       const appointment = await storage.updateAppointment(req.params.id, validatedData);
       res.json(appointment);
     } catch (error) {
