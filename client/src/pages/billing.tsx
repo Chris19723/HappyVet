@@ -36,7 +36,10 @@ const emptyForm = (): TreatmentFormState => ({
 export default function Billing() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("q") ?? "";
+  });
   const [treatmentSearch, setTreatmentSearch] = useState("");
 
   const [treatmentDialogOpen, setTreatmentDialogOpen] = useState(false);

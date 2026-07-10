@@ -369,7 +369,7 @@ export default function Appointments() {
                               </Badge>
                               {linkedInvoice && (
                                 <button
-                                  onClick={() => setLocation("/billing")}
+                                  onClick={() => setLocation(`/billing?q=${encodeURIComponent(linkedInvoice.invoiceNumber)}`)}
                                   className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                                 >
                                   <Receipt className="h-3 w-3" />

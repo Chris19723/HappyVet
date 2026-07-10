@@ -84,7 +84,8 @@ export default function ServicesInvoiceModal({
 
     setGenerating(true);
     try {
-      const subtotalStr = subtotal.toFixed(2);
+      const validSubtotal = validItems.reduce((sum, it) => sum + lineTotal(it), 0);
+      const subtotalStr = validSubtotal.toFixed(2);
       const invoicePayload = {
         ownerId: appointment.patient.ownerId,
         patientId: appointment.patientId,
