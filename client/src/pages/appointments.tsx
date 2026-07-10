@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
@@ -17,10 +18,11 @@ import { Calendar } from "@/components/ui/calendar";
 import {
   Plus, Search, Edit, Trash2,
   Calendar as CalendarIcon, Clock, User,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, Receipt, ClipboardList,
 } from "lucide-react";
 import AppointmentForm from "@/components/forms/appointment-form";
-import type { AppointmentWithDetails } from "@shared/schema";
+import ServicesInvoiceModal from "@/components/forms/services-invoice-modal";
+import type { AppointmentWithDetails, InvoiceWithDetails } from "@shared/schema";
 import {
   format, isSameDay, addDays, subDays, isToday,
   startOfWeek, endOfWeek, addWeeks, subWeeks,
@@ -34,23 +36,19 @@ type ViewMode = "day" | "week" | "month";
 export default function Appointments() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
+  const [, setLocation] = useLocation();
   const [searchTerm, setSearchTerm] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("day");
   const [anchorDate, setAnchorDate] = useState<Date>(new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<AppointmentWithDetails | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [servicesAppointment, setServicesAppointment] = useState<AppointmentWithDetails | null>(null);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      toast({
-        title: "Unauthorized",
-        description: "You are logged out. Logging in again...",
-        variant: "destructive",
-      });
-      setTimeout(() => {
-        window.location.href = "/api/login";
-      }, 500);
+      toast({ title: "Unauthorized", description: "You are logged out. Logging in again...", variant: "destructive" });
+      setTimeout(() => { window.location.href = "/api/login"; }, 500);
       return;
     }
   }, [isAuthenticated, isLoading, toast]);
@@ -58,6 +56,17 @@ export default function Appointments() {
   const { data: appointments, isLoading: appointmentsLoading, error } = useQuery({
     queryKey: ["/api/appointments"],
     retry: false,
+  });
+
+  const { data: invoices } = useQuery<InvoiceWithDetails[]>({
+    queryKey: ["/api/invoices"],
+    retry: false,
+  });
+
+  // Build appointment → invoice map for badge display
+  const appointmentInvoiceMap = new Map<string, InvoiceWithDetails>();
+  invoices?.forEach((inv) => {
+    if (inv.appointmentId) appointmentInvoiceMap.set(inv.appointmentId, inv);
   });
 
   const deleteMutation = useMutation({
@@ -104,28 +113,23 @@ export default function Appointments() {
       ? endOfWeek(anchorDate, { locale: es })
       : endOfMonth(anchorDate);
 
-  // Navigation
   const goBack = () => {
     if (viewMode === "day") setAnchorDate((d) => subDays(d, 1));
     else if (viewMode === "week") setAnchorDate((d) => subWeeks(d, 1));
     else setAnchorDate((d) => subMonths(d, 1));
   };
-
   const goForward = () => {
     if (viewMode === "day") setAnchorDate((d) => addDays(d, 1));
     else if (viewMode === "week") setAnchorDate((d) => addWeeks(d, 1));
     else setAnchorDate((d) => addMonths(d, 1));
   };
-
   const goToday = () => setAnchorDate(new Date());
 
-  // Is today within the current range?
   const todayInRange =
     viewMode === "day"
       ? isToday(anchorDate)
       : isWithinInterval(new Date(), { start: rangeStart, end: rangeEnd });
 
-  // Human-readable period label
   const periodLabel =
     viewMode === "day"
       ? (() => {
@@ -139,11 +143,9 @@ export default function Appointments() {
           return s.charAt(0).toUpperCase() + s.slice(1);
         })();
 
-  // Back/forward button labels
   const prevLabel = viewMode === "day" ? "Anterior" : viewMode === "week" ? "Semana anterior" : "Mes anterior";
   const nextLabel = viewMode === "day" ? "Siguiente" : viewMode === "week" ? "Semana siguiente" : "Mes siguiente";
 
-  // Filter appointments
   const filteredAppointments = (appointments as AppointmentWithDetails[] | undefined)?.filter((appt) => {
     const apptDate = new Date(appt.appointmentDate);
     const matchesPeriod =
@@ -158,7 +160,6 @@ export default function Appointments() {
     return matchesPeriod && matchesSearch;
   }) || [];
 
-  // Sort by date ascending
   filteredAppointments.sort(
     (a, b) => new Date(a.appointmentDate).getTime() - new Date(b.appointmentDate).getTime()
   );
@@ -250,7 +251,6 @@ export default function Appointments() {
                 variant={viewMode === mode ? "default" : "outline"}
                 size="sm"
                 onClick={() => setViewMode(mode)}
-                className="capitalize"
               >
                 {mode === "day" ? "Día" : mode === "week" ? "Semana" : "Mes"}
               </Button>
@@ -345,91 +345,132 @@ export default function Appointments() {
               <p className="text-sm text-slate-500">
                 {filteredAppointments.length} cita{filteredAppointments.length !== 1 ? "s" : ""} en este período
               </p>
-              {filteredAppointments.map((appointment) => (
-                <Card key={appointment.id} className="hover:shadow-lg transition-shadow">
-                  <CardContent className="p-6">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start space-x-4">
-                        <Avatar className="h-12 w-12">
-                          <AvatarImage src={appointment.patient.photoUrl || undefined} />
-                          <AvatarFallback className="bg-gradient-to-br from-blue-400 to-blue-600 text-white">
-                            {getInitials(appointment.patient.name)}
-                          </AvatarFallback>
-                        </Avatar>
+              {filteredAppointments.map((appointment) => {
+                const linkedInvoice = appointmentInvoiceMap.get(appointment.id);
+                return (
+                  <Card key={appointment.id} className="hover:shadow-lg transition-shadow">
+                    <CardContent className="p-6">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start space-x-4 flex-1 min-w-0">
+                          <Avatar className="h-12 w-12 shrink-0">
+                            <AvatarImage src={appointment.patient.photoUrl || undefined} />
+                            <AvatarFallback className="bg-gradient-to-br from-blue-400 to-blue-600 text-white">
+                              {getInitials(appointment.patient.name)}
+                            </AvatarFallback>
+                          </Avatar>
 
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-3 mb-2">
-                            <h3 className="text-lg font-semibold text-slate-900">
-                              {appointment.patient.name}
-                            </h3>
-                            <Badge className={getStatusColor(appointment.status)}>
-                              {getStatusLabel(appointment.status)}
-                            </Badge>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center flex-wrap gap-2 mb-2">
+                              <h3 className="text-lg font-semibold text-slate-900">
+                                {appointment.patient.name}
+                              </h3>
+                              <Badge className={getStatusColor(appointment.status)}>
+                                {getStatusLabel(appointment.status)}
+                              </Badge>
+                              {linkedInvoice && (
+                                <button
+                                  onClick={() => setLocation("/billing")}
+                                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                                >
+                                  <Receipt className="h-3 w-3" />
+                                  {linkedInvoice.invoiceNumber}
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="space-y-1 text-sm text-slate-600">
+                              <div className="flex items-center space-x-2">
+                                <User className="h-4 w-4 shrink-0" />
+                                <span>
+                                  {appointment.patient.owner.firstName} {appointment.patient.owner.lastName}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <CalendarIcon className="h-4 w-4 shrink-0" />
+                                <span>
+                                  {format(new Date(appointment.appointmentDate), "EEEE d 'de' MMMM", { locale: es })}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Clock className="h-4 w-4 shrink-0" />
+                                <span>
+                                  {format(new Date(appointment.appointmentDate), "HH:mm")}
+                                  {appointment.duration && ` · ${appointment.duration} min`}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="mt-3">
+                              <p className="font-medium text-slate-900">Motivo:</p>
+                              <p className="text-slate-600">{appointment.reason}</p>
+                            </div>
+
+                            {appointment.notes && (
+                              <div className="mt-2">
+                                <p className="font-medium text-slate-900">Notas:</p>
+                                <p className="text-slate-600">{appointment.notes}</p>
+                              </div>
+                            )}
                           </div>
+                        </div>
 
-                          <div className="space-y-1 text-sm text-slate-600">
-                            <div className="flex items-center space-x-2">
-                              <User className="h-4 w-4" />
-                              <span>
-                                {appointment.patient.owner.firstName} {appointment.patient.owner.lastName}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center space-x-2">
-                              <CalendarIcon className="h-4 w-4" />
-                              <span>
-                                {format(new Date(appointment.appointmentDate), "EEEE d 'de' MMMM", { locale: es })}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center space-x-2">
-                              <Clock className="h-4 w-4" />
-                              <span>
-                                {format(new Date(appointment.appointmentDate), "HH:mm")}
-                                {appointment.duration && ` · ${appointment.duration} min`}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="mt-3">
-                            <p className="font-medium text-slate-900">Motivo:</p>
-                            <p className="text-slate-600">{appointment.reason}</p>
-                          </div>
-
-                          {appointment.notes && (
-                            <div className="mt-2">
-                              <p className="font-medium text-slate-900">Notas:</p>
-                              <p className="text-slate-600">{appointment.notes}</p>
-                            </div>
+                        <div className="flex flex-col gap-2 ml-4 shrink-0">
+                          {!linkedInvoice && appointment.status !== "cancelled" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-xs gap-1"
+                              onClick={() => setServicesAppointment(appointment)}
+                            >
+                              <ClipboardList className="h-3.5 w-3.5" />
+                              Agregar Servicios
+                            </Button>
                           )}
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => { setSelectedAppointment(appointment); setIsFormOpen(true); }}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => deleteMutation.mutate(appointment.id)}
+                              disabled={deleteMutation.isPending}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       </div>
-
-                      <div className="flex space-x-2 ml-4 shrink-0">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => { setSelectedAppointment(appointment); setIsFormOpen(true); }}
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => deleteMutation.mutate(appointment.id)}
-                          disabled={deleteMutation.isPending}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>
       </main>
+
+      {/* Services & Invoice modal */}
+      {servicesAppointment && (
+        <ServicesInvoiceModal
+          appointment={servicesAppointment}
+          open={!!servicesAppointment}
+          onClose={() => setServicesAppointment(null)}
+          onSuccess={(invoiceNumber) => {
+            setServicesAppointment(null);
+            toast({
+              title: "Factura generada",
+              description: `Se creó la factura ${invoiceNumber}. La cita fue marcada como Completada.`,
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

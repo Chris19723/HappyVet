@@ -346,6 +346,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/treatments/:id", isAuthenticated, async (req, res) => {
+    try {
+      const validatedData = insertTreatmentSchema.partial().parse(req.body);
+      const treatment = await storage.updateTreatment(req.params.id, validatedData);
+      res.json(treatment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      console.error("Error updating treatment:", error);
+      res.status(500).json({ message: "Failed to update treatment" });
+    }
+  });
+
+  app.delete("/api/treatments/:id", isAuthenticated, async (req, res) => {
+    try {
+      await storage.deleteTreatment(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting treatment:", error);
+      res.status(500).json({ message: "Failed to delete treatment" });
+    }
+  });
+
   // Invoice routes
   app.get("/api/invoices", isAuthenticated, async (req, res) => {
     try {
