@@ -14,17 +14,29 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { Plus, Search, Edit, Trash2, Calendar as CalendarIcon, Clock, User, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  Plus, Search, Edit, Trash2,
+  Calendar as CalendarIcon, Clock, User,
+  ChevronLeft, ChevronRight,
+} from "lucide-react";
 import AppointmentForm from "@/components/forms/appointment-form";
 import type { AppointmentWithDetails } from "@shared/schema";
-import { format, isSameDay, addDays, subDays, isToday } from "date-fns";
+import {
+  format, isSameDay, addDays, subDays, isToday,
+  startOfWeek, endOfWeek, addWeeks, subWeeks,
+  startOfMonth, endOfMonth, addMonths, subMonths,
+  isWithinInterval,
+} from "date-fns";
 import { es } from "date-fns/locale";
+
+type ViewMode = "day" | "week" | "month";
 
 export default function Appointments() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [viewMode, setViewMode] = useState<ViewMode>("day");
+  const [anchorDate, setAnchorDate] = useState<Date>(new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<AppointmentWithDetails | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -55,28 +67,15 @@ export default function Appointments() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/today-appointments"] });
-      toast({
-        title: "Cita eliminada",
-        description: "La cita se eliminó correctamente.",
-      });
+      toast({ title: "Cita eliminada", description: "La cita se eliminó correctamente." });
     },
     onError: (error) => {
       if (isUnauthorizedError(error)) {
-        toast({
-          title: "Unauthorized",
-          description: "You are logged out. Logging in again...",
-          variant: "destructive",
-        });
-        setTimeout(() => {
-          window.location.href = "/api/login";
-        }, 500);
+        toast({ title: "Unauthorized", description: "You are logged out. Logging in again...", variant: "destructive" });
+        setTimeout(() => { window.location.href = "/api/login"; }, 500);
         return;
       }
-      toast({
-        title: "Error",
-        description: "No se pudo eliminar la cita.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "No se pudo eliminar la cita.", variant: "destructive" });
     },
   });
 
@@ -88,22 +87,81 @@ export default function Appointments() {
     );
   }
 
-  if (!isAuthenticated) {
-    return null;
-  }
+  if (!isAuthenticated) return null;
 
-  const filteredAppointments = (appointments as AppointmentWithDetails[] | undefined)?.filter((appointment) => {
-    const matchesDate = isSameDay(new Date(appointment.appointmentDate), selectedDate);
+  // Compute range start/end based on view mode
+  const rangeStart =
+    viewMode === "day"
+      ? anchorDate
+      : viewMode === "week"
+      ? startOfWeek(anchorDate, { locale: es })
+      : startOfMonth(anchorDate);
+
+  const rangeEnd =
+    viewMode === "day"
+      ? anchorDate
+      : viewMode === "week"
+      ? endOfWeek(anchorDate, { locale: es })
+      : endOfMonth(anchorDate);
+
+  // Navigation
+  const goBack = () => {
+    if (viewMode === "day") setAnchorDate((d) => subDays(d, 1));
+    else if (viewMode === "week") setAnchorDate((d) => subWeeks(d, 1));
+    else setAnchorDate((d) => subMonths(d, 1));
+  };
+
+  const goForward = () => {
+    if (viewMode === "day") setAnchorDate((d) => addDays(d, 1));
+    else if (viewMode === "week") setAnchorDate((d) => addWeeks(d, 1));
+    else setAnchorDate((d) => addMonths(d, 1));
+  };
+
+  const goToday = () => setAnchorDate(new Date());
+
+  // Is today within the current range?
+  const todayInRange =
+    viewMode === "day"
+      ? isToday(anchorDate)
+      : isWithinInterval(new Date(), { start: rangeStart, end: rangeEnd });
+
+  // Human-readable period label
+  const periodLabel =
+    viewMode === "day"
+      ? (() => {
+          const s = format(anchorDate, "EEEE d 'de' MMMM, yyyy", { locale: es });
+          return s.charAt(0).toUpperCase() + s.slice(1);
+        })()
+      : viewMode === "week"
+      ? `${format(rangeStart, "d 'de' MMM", { locale: es })} – ${format(rangeEnd, "d 'de' MMM, yyyy", { locale: es })}`
+      : (() => {
+          const s = format(anchorDate, "MMMM yyyy", { locale: es });
+          return s.charAt(0).toUpperCase() + s.slice(1);
+        })();
+
+  // Back/forward button labels
+  const prevLabel = viewMode === "day" ? "Anterior" : viewMode === "week" ? "Semana anterior" : "Mes anterior";
+  const nextLabel = viewMode === "day" ? "Siguiente" : viewMode === "week" ? "Semana siguiente" : "Mes siguiente";
+
+  // Filter appointments
+  const filteredAppointments = (appointments as AppointmentWithDetails[] | undefined)?.filter((appt) => {
+    const apptDate = new Date(appt.appointmentDate);
+    const matchesPeriod =
+      viewMode === "day"
+        ? isSameDay(apptDate, anchorDate)
+        : isWithinInterval(apptDate, { start: rangeStart, end: rangeEnd });
     const matchesSearch =
-      appointment.patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      appointment.patient.owner.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      appointment.patient.owner.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      appointment.reason.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesDate && matchesSearch;
+      appt.patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appt.patient.owner.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appt.patient.owner.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      appt.reason.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchesPeriod && matchesSearch;
   }) || [];
 
-  const formattedDate = format(selectedDate, "EEEE d 'de' MMMM, yyyy", { locale: es });
-  const formattedDateCapitalized = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+  // Sort by date ascending
+  filteredAppointments.sort(
+    (a, b) => new Date(a.appointmentDate).getTime() - new Date(b.appointmentDate).getTime()
+  );
 
   const getStatusColor = (status: string | null) => {
     const colors: Record<string, string> = {
@@ -130,14 +188,25 @@ export default function Appointments() {
   const getInitials = (name: string) =>
     name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 
+  const emptyMessage =
+    searchTerm
+      ? "Sin resultados para la búsqueda"
+      : viewMode === "day"
+      ? "Sin citas para este día"
+      : viewMode === "week"
+      ? "Sin citas para esta semana"
+      : "Sin citas para este mes";
+
+  const emptySubMessage =
+    searchTerm
+      ? "Prueba con otros términos o limpia el filtro de texto."
+      : `No hay citas programadas para ${periodLabel}.`;
+
   return (
     <div className="min-h-screen flex bg-slate-50">
       <Sidebar />
       <main className="flex-1 overflow-auto">
-        <Header
-          title="Citas"
-          subtitle="Gestión de citas y programación de consultas"
-        />
+        <Header title="Citas" subtitle="Gestión de citas y programación de consultas" />
 
         <div className="p-6">
           {/* Search and New appointment */}
@@ -163,33 +232,39 @@ export default function Appointments() {
               </DialogTrigger>
               <DialogContent className="max-w-2xl">
                 <DialogHeader>
-                  <DialogTitle>
-                    {selectedAppointment ? "Editar Cita" : "Nueva Cita"}
-                  </DialogTitle>
+                  <DialogTitle>{selectedAppointment ? "Editar Cita" : "Nueva Cita"}</DialogTitle>
                 </DialogHeader>
                 <AppointmentForm
                   appointment={selectedAppointment}
-                  onSuccess={() => {
-                    setIsFormOpen(false);
-                    setSelectedAppointment(null);
-                  }}
+                  onSuccess={() => { setIsFormOpen(false); setSelectedAppointment(null); }}
                 />
               </DialogContent>
             </Dialog>
+          </div>
+
+          {/* View mode toggle */}
+          <div className="flex gap-1 mb-3">
+            {(["day", "week", "month"] as ViewMode[]).map((mode) => (
+              <Button
+                key={mode}
+                variant={viewMode === mode ? "default" : "outline"}
+                size="sm"
+                onClick={() => setViewMode(mode)}
+                className="capitalize"
+              >
+                {mode === "day" ? "Día" : mode === "week" ? "Semana" : "Mes"}
+              </Button>
+            ))}
           </div>
 
           {/* Date navigation bar */}
           <Card className="mb-6">
             <CardContent className="py-3 px-4">
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-1 sm:gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setSelectedDate((d) => subDays(d, 1))}
-                  >
+                <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+                  <Button variant="outline" size="sm" onClick={goBack}>
                     <ChevronLeft className="h-4 w-4" />
-                    <span className="hidden sm:inline">Anterior</span>
+                    <span className="hidden sm:inline ml-1">{prevLabel}</span>
                   </Button>
 
                   <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
@@ -199,8 +274,8 @@ export default function Appointments() {
                         className="font-semibold text-slate-800 hover:bg-slate-100 px-2 sm:px-3 text-sm sm:text-base gap-2"
                       >
                         <CalendarIcon className="h-4 w-4 text-slate-500 shrink-0" />
-                        <span>{formattedDateCapitalized}</span>
-                        {isToday(selectedDate) && (
+                        <span>{periodLabel}</span>
+                        {todayInRange && (
                           <Badge className="bg-primary text-white text-xs py-0 px-1.5">Hoy</Badge>
                         )}
                       </Button>
@@ -208,12 +283,9 @@ export default function Appointments() {
                     <PopoverContent className="w-auto p-0" align="start">
                       <Calendar
                         mode="single"
-                        selected={selectedDate}
+                        selected={anchorDate}
                         onSelect={(date) => {
-                          if (date) {
-                            setSelectedDate(date);
-                            setCalendarOpen(false);
-                          }
+                          if (date) { setAnchorDate(date); setCalendarOpen(false); }
                         }}
                         initialFocus
                         locale={es}
@@ -221,22 +293,14 @@ export default function Appointments() {
                     </PopoverContent>
                   </Popover>
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setSelectedDate((d) => addDays(d, 1))}
-                  >
-                    <span className="hidden sm:inline">Siguiente</span>
+                  <Button variant="outline" size="sm" onClick={goForward}>
+                    <span className="hidden sm:inline mr-1">{nextLabel}</span>
                     <ChevronRight className="h-4 w-4" />
                   </Button>
                 </div>
 
-                {!isToday(selectedDate) && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setSelectedDate(new Date())}
-                  >
+                {!todayInRange && (
+                  <Button variant="secondary" size="sm" onClick={goToday}>
                     Hoy
                   </Button>
                 )}
@@ -266,16 +330,8 @@ export default function Appointments() {
             <Card>
               <CardContent className="p-10 text-center">
                 <CalendarIcon className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-slate-700 mb-1">
-                  {searchTerm
-                    ? "Sin resultados para la búsqueda"
-                    : "Sin citas para este día"}
-                </h3>
-                <p className="text-slate-500 mb-4 text-sm">
-                  {searchTerm
-                    ? "Prueba con otros términos o limpia el filtro de texto."
-                    : `No hay citas programadas para el ${formattedDateCapitalized}.`}
-                </p>
+                <h3 className="text-lg font-semibold text-slate-700 mb-1">{emptyMessage}</h3>
+                <p className="text-slate-500 mb-4 text-sm">{emptySubMessage}</p>
                 {!searchTerm && (
                   <Button onClick={() => setIsFormOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
@@ -287,7 +343,7 @@ export default function Appointments() {
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-slate-500">
-                {filteredAppointments.length} cita{filteredAppointments.length !== 1 ? "s" : ""} para este día
+                {filteredAppointments.length} cita{filteredAppointments.length !== 1 ? "s" : ""} en este período
               </p>
               {filteredAppointments.map((appointment) => (
                 <Card key={appointment.id} className="hover:shadow-lg transition-shadow">
@@ -320,6 +376,13 @@ export default function Appointments() {
                             </div>
 
                             <div className="flex items-center space-x-2">
+                              <CalendarIcon className="h-4 w-4" />
+                              <span>
+                                {format(new Date(appointment.appointmentDate), "EEEE d 'de' MMMM", { locale: es })}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center space-x-2">
                               <Clock className="h-4 w-4" />
                               <span>
                                 {format(new Date(appointment.appointmentDate), "HH:mm")}
@@ -346,10 +409,7 @@ export default function Appointments() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
-                            setSelectedAppointment(appointment);
-                            setIsFormOpen(true);
-                          }}
+                          onClick={() => { setSelectedAppointment(appointment); setIsFormOpen(true); }}
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
