@@ -14,7 +14,6 @@ import { ObjectUploader } from "@/components/ObjectUploader";
 import { insertPatientSchema, type PatientWithOwner, type InsertPatient } from "@shared/schema";
 import { Camera, User } from "lucide-react";
 import type { z } from "zod";
-import type { UploadResult } from "@uppy/core";
 
 const formSchema = insertPatientSchema.extend({
   birthDate: insertPatientSchema.shape.birthDate.optional(),
@@ -143,17 +142,15 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     };
   };
 
-  const handlePatientPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
+  const handlePatientPhotoComplete = (result: { successful: Array<{ uploadURL: string }>; failed: unknown[] }) => {
     if (result.successful && result.successful.length > 0) {
-      const uploadedFile = result.successful[0] as any;
-      setPatientPhotoUrl(uploadedFile.response?.uploadURL || uploadedFile.uploadURL || null);
+      setPatientPhotoUrl(result.successful[0].uploadURL || null);
     }
   };
 
-  const handleOwnerPhotoComplete = (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
+  const handleOwnerPhotoComplete = (result: { successful: Array<{ uploadURL: string }>; failed: unknown[] }) => {
     if (result.successful && result.successful.length > 0) {
-      const uploadedFile = result.successful[0] as any;
-      setOwnerPhotoUrl(uploadedFile.response?.uploadURL || uploadedFile.uploadURL || null);
+      setOwnerPhotoUrl(result.successful[0].uploadURL || null);
     }
   };
 
