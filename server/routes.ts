@@ -353,6 +353,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/invoices/:id", isAuthenticated, async (req, res) => {
+    try {
+      const validatedData = insertInvoiceSchema.partial().parse(req.body);
+      const invoice = await storage.updateInvoice(req.params.id, validatedData);
+      res.json(invoice);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      console.error("Error updating invoice:", error);
+      res.status(500).json({ message: "Failed to update invoice" });
+    }
+  });
+
   app.post("/api/invoices/:id/items", isAuthenticated, async (req, res) => {
     try {
       const validatedData = insertInvoiceItemSchema.parse({
@@ -416,6 +430,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating inventory item:", error);
       res.status(500).json({ message: "Failed to update inventory item" });
+    }
+  });
+
+  app.delete("/api/inventory/:id", isAuthenticated, async (req, res) => {
+    try {
+      await storage.deleteInventoryItem(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting inventory item:", error);
+      res.status(500).json({ message: "Failed to delete inventory item" });
     }
   });
 

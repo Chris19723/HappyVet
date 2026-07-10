@@ -135,10 +135,11 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
 
   // Photo upload handlers
   const getUploadParameters = async () => {
-    const response = await apiRequest("POST", "/api/objects/upload") as any;
+    const response = await apiRequest("POST", "/api/objects/upload");
+    const { uploadURL } = await response.json();
     return {
       method: "PUT" as const,
-      url: response.uploadURL,
+      url: uploadURL,
     };
   };
 
@@ -201,7 +202,8 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     } else {
       // For new patients, we need to get the created patient ID first
       try {
-        const newPatient = await apiRequest("POST", "/api/patients", submitData) as any;
+        const response = await apiRequest("POST", "/api/patients", submitData);
+        const newPatient = await response.json();
         
         // Save photos if any were uploaded
         if (patientPhotoUrl || ownerPhotoUrl) {
