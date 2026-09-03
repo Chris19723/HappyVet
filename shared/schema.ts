@@ -276,6 +276,7 @@ export const insertTreatmentSchema = createInsertSchema(treatments).omit({
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   id: true,
+  invoiceNumber: true,
   createdAt: true,
   updatedAt: true,
 });

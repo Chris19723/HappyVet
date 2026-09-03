@@ -81,7 +81,7 @@ export interface IStorage {
   // Invoice operations
   getInvoices(): Promise<InvoiceWithDetails[]>;
   getInvoice(id: string): Promise<InvoiceWithDetails | undefined>;
-  createInvoice(invoice: InsertInvoice): Promise<Invoice>;
+  createInvoice(invoice: InsertInvoice & Pick<Invoice, "invoiceNumber">): Promise<Invoice>;
   updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice>;
   deleteInvoice(id: string): Promise<void>;
   addInvoiceItem(item: InsertInvoiceItem): Promise<InvoiceItem>;
@@ -499,7 +499,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async createInvoice(invoice: InsertInvoice): Promise<Invoice> {
+  async createInvoice(invoice: InsertInvoice & Pick<Invoice, "invoiceNumber">): Promise<Invoice> {
     const [created] = await db.insert(invoices).values(invoice).returning();
     return created;
   }
