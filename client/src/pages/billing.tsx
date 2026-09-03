@@ -19,7 +19,17 @@ import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign, Packag
 import type { InvoiceWithDetails, Treatment, InsertTreatment } from "@shared/schema";
 import { format } from "date-fns";
 
-const CATEGORIES = ["Consulta", "Vacunación", "Cirugía", "Estética", "Diagnóstico", "Medicamento", "Otro"];
+const CATEGORIES = [
+  "Consulta",
+  "Vacunación",
+  "Cirugía",
+  "Estética",
+  "Estética Canina",
+  "Diagnóstico",
+  "Estudios de Laboratorio",
+  "Medicamento",
+  "Otro",
+];
 
 interface TreatmentFormState {
   name: string;
