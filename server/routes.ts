@@ -398,6 +398,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
       const validatedData = insertInvoiceSchema.parse(payload);
+      if (validatedData.appointmentId) {
+        const existingInvoice = await storage.getInvoiceByAppointment(validatedData.appointmentId);
+        if (existingInvoice) {
+          return res.status(409).json({
+            message: "This appointment already has an invoice",
+            invoice: existingInvoice,
+          });
+        }
+      }
       // Generate invoice number
       const invoiceNumber = `INV-${Date.now()}`;
       const invoiceData = { ...validatedData, invoiceNumber };
@@ -406,6 +415,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      if (error instanceof Error && error.message === "APPOINTMENT_ALREADY_INVOICED") {
+        return res.status(409).json({ message: "This appointment already has an invoice" });
       }
       console.error("Error creating invoice:", error);
       res.status(500).json({ message: "Failed to create invoice" });
@@ -441,6 +453,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error adding invoice item:", error);
       res.status(500).json({ message: "Failed to add invoice item" });
+    }
+  });
+
+  app.delete("/api/invoices/:id", isAuthenticated, async (req, res) => {
+    try {
+      const invoice = await storage.getInvoice(req.params.id);
+      if (!invoice) {
+        return res.status(404).json({ message: "Invoice not found" });
+      }
+      await storage.deleteInvoice(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting invoice:", error);
+      res.status(500).json({ message: "Failed to delete invoice" });
     }
   });
 

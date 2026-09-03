@@ -81,6 +81,7 @@ export interface IStorage {
   // Invoice operations
   getInvoices(): Promise<InvoiceWithDetails[]>;
   getInvoice(id: string): Promise<InvoiceWithDetails | undefined>;
+  getInvoiceByAppointment(appointmentId: string): Promise<Invoice | undefined>;
   createInvoice(invoice: InsertInvoice & Pick<Invoice, "invoiceNumber">): Promise<Invoice>;
   updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice>;
   deleteInvoice(id: string): Promise<void>;
@@ -499,9 +500,33 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async getInvoiceByAppointment(appointmentId: string): Promise<Invoice | undefined> {
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.appointmentId, appointmentId))
+      .orderBy(desc(invoices.issueDate))
+      .limit(1);
+    return invoice;
+  }
+
   async createInvoice(invoice: InsertInvoice & Pick<Invoice, "invoiceNumber">): Promise<Invoice> {
-    const [created] = await db.insert(invoices).values(invoice).returning();
-    return created;
+    return await db.transaction(async (tx) => {
+      if (invoice.appointmentId) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${invoice.appointmentId}))`);
+        const [existingInvoice] = await tx
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(eq(invoices.appointmentId, invoice.appointmentId))
+          .limit(1);
+        if (existingInvoice) {
+          throw new Error("APPOINTMENT_ALREADY_INVOICED");
+        }
+      }
+
+      const [created] = await tx.insert(invoices).values(invoice).returning();
+      return created;
+    });
   }
 
   async updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice> {
@@ -514,7 +539,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInvoice(id: string): Promise<void> {
-    await db.delete(invoices).where(eq(invoices.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
+      await tx.delete(invoices).where(eq(invoices.id, id));
+    });
   }
 
   async addInvoiceItem(item: InsertInvoiceItem): Promise<InvoiceItem> {

@@ -84,6 +84,21 @@ export default function Billing() {
     },
   });
 
+  const deleteInvoiceMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/invoices/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      toast({ title: "Factura eliminada correctamente." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "No se pudo eliminar la factura.", variant: "destructive" });
+    },
+  });
+
   const createTreatmentMutation = useMutation({
     mutationFn: async (data: InsertTreatment) => {
       const res = await apiRequest("POST", "/api/treatments", data);
@@ -330,7 +345,7 @@ export default function Billing() {
                   {filteredInvoices.map((invoice) => (
                     <Card key={invoice.id} className="hover:shadow-lg transition-shadow">
                       <CardContent className="p-6">
-                        <div className="flex items-start justify-between">
+                        <div className="flex items-start justify-between gap-4">
                           <div className="flex-1">
                             <div className="flex items-center space-x-3 mb-3">
                               <h3 className="text-lg font-semibold text-slate-900">{invoice.invoiceNumber}</h3>
@@ -420,6 +435,21 @@ export default function Billing() {
                               Imprimir
                             </Button>
                           </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="shrink-0 text-red-600 hover:text-red-700"
+                            disabled={deleteInvoiceMutation.isPending}
+                            onClick={() => {
+                              if (window.confirm(`¿Eliminar la factura ${invoice.invoiceNumber}? Esta acción no se puede deshacer.`)) {
+                                deleteInvoiceMutation.mutate(invoice.id);
+                              }
+                            }}
+                            aria-label={`Eliminar factura ${invoice.invoiceNumber}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       </CardContent>
                     </Card>

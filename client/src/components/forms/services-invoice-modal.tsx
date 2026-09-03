@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -38,6 +38,7 @@ export default function ServicesInvoiceModal({
   const { toast } = useToast();
   const [items, setItems] = useState<LineItem[]>([emptyItem()]);
   const [generating, setGenerating] = useState(false);
+  const generationInProgress = useRef(false);
 
   const { data: treatments } = useQuery<Treatment[]>({
     queryKey: ["/api/treatments"],
@@ -74,6 +75,8 @@ export default function ServicesInvoiceModal({
   const subtotal = items.reduce((sum, it) => sum + lineTotal(it), 0);
 
   const handleGenerate = async () => {
+    if (generationInProgress.current) return;
+
     const validItems = items.filter(
       (it) => it.description.trim() && parseFloat(it.unitPrice) > 0 && it.quantity > 0
     );
@@ -82,6 +85,7 @@ export default function ServicesInvoiceModal({
       return;
     }
 
+    generationInProgress.current = true;
     setGenerating(true);
     try {
       const validSubtotal = validItems.reduce((sum, it) => sum + lineTotal(it), 0);
@@ -127,6 +131,7 @@ export default function ServicesInvoiceModal({
       console.error("Error generating invoice:", err);
       toast({ title: "Error", description: "No se pudo generar la factura.", variant: "destructive" });
     } finally {
+      generationInProgress.current = false;
       setGenerating(false);
     }
   };
