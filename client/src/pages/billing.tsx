@@ -55,6 +55,11 @@ export default function Billing() {
   const [editingTreatment, setEditingTreatment] = useState<Treatment | null>(null);
   const [treatmentForm, setTreatmentForm] = useState<TreatmentFormState>(emptyForm());
 
+  const redirectToLogin = () => {
+    toast({ title: "Sesión expirada", description: "Inicia sesión nuevamente para continuar.", variant: "destructive" });
+    setTimeout(() => { window.location.href = "/api/login"; }, 500);
+  };
+
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       toast({ title: "Unauthorized", description: "You are logged out. Logging in again...", variant: "destructive" });
@@ -118,7 +123,11 @@ export default function Billing() {
       toast({ title: "Servicio creado correctamente." });
       closeTreatmentDialog();
     },
-    onError: () => {
+    onError: (error) => {
+      if (isUnauthorizedError(error)) {
+        redirectToLogin();
+        return;
+      }
       toast({ title: "Error", description: "No se pudo crear el servicio.", variant: "destructive" });
     },
   });
@@ -132,7 +141,11 @@ export default function Billing() {
       toast({ title: "Servicio actualizado correctamente." });
       closeTreatmentDialog();
     },
-    onError: () => {
+    onError: (error) => {
+      if (isUnauthorizedError(error)) {
+        redirectToLogin();
+        return;
+      }
       toast({ title: "Error", description: "No se pudo actualizar el servicio.", variant: "destructive" });
     },
   });
@@ -145,7 +158,11 @@ export default function Billing() {
       queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
       toast({ title: "Servicio desactivado." });
     },
-    onError: () => {
+    onError: (error) => {
+      if (isUnauthorizedError(error)) {
+        redirectToLogin();
+        return;
+      }
       toast({ title: "Error", description: "No se pudo desactivar el servicio.", variant: "destructive" });
     },
   });
