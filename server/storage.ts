@@ -102,6 +102,13 @@ export interface IStorage {
     monthlyRevenue: number;
     lowStock: number;
   }>;
+  getRecentActivity(): Promise<{
+    id: string;
+    type: "success" | "info" | "warning";
+    description: string;
+    user: string | null;
+    timestamp: Date;
+  }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -646,6 +653,83 @@ export class DatabaseStorage implements IStorage {
       monthlyRevenue: Number(monthlyRevenueResult.total),
       lowStock: Number(lowStockResult.count),
     };
+  }
+
+  async getRecentActivity(): Promise<{
+    id: string;
+    type: "success" | "info" | "warning";
+    description: string;
+    user: string | null;
+    timestamp: Date;
+  }[]> {
+    const result = await db.execute(sql`
+      SELECT id, type, description, activity_user AS "user", activity_timestamp AS timestamp
+      FROM (
+        SELECT
+          'appointment-' || a.id AS id,
+          'info' AS type,
+          'Nueva cita programada para ' || COALESCE(p.name, 'paciente') AS description,
+          NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '') AS activity_user,
+          a.created_at AS activity_timestamp
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.patient_id
+        LEFT JOIN users u ON u.id = a.veterinarian_id
+
+        UNION ALL
+
+        SELECT
+          'invoice-' || i.id,
+          'warning',
+          'Factura ' || i.invoice_number || ' generada para ' || COALESCE(p.name, 'paciente'),
+          NULL,
+          i.created_at
+        FROM invoices i
+        LEFT JOIN patients p ON p.id = i.patient_id
+
+        UNION ALL
+
+        SELECT
+          'patient-' || p.id,
+          'success',
+          'Nuevo paciente registrado: ' || p.name,
+          NULL,
+          p.created_at
+        FROM patients p
+
+        UNION ALL
+
+        SELECT
+          'owner-' || o.id,
+          'success',
+          'Nuevo propietario registrado: ' || o.first_name || ' ' || o.last_name,
+          NULL,
+          o.created_at
+        FROM owners o
+
+        UNION ALL
+
+        SELECT
+          'medical-record-' || m.id,
+          'success',
+          'Expediente médico actualizado para ' || COALESCE(p.name, 'paciente'),
+          NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+          m.created_at
+        FROM medical_records m
+        LEFT JOIN patients p ON p.id = m.patient_id
+        LEFT JOIN users u ON u.id = m.veterinarian_id
+      ) activities
+      WHERE activity_timestamp IS NOT NULL
+      ORDER BY activity_timestamp DESC
+      LIMIT 6
+    `);
+
+    return result.rows as {
+      id: string;
+      type: "success" | "info" | "warning";
+      description: string;
+      user: string | null;
+      timestamp: Date;
+    }[];
   }
 }
 

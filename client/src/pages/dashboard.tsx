@@ -9,7 +9,16 @@ import StatsCards from "@/components/dashboard/stats-cards";
 import AppointmentsToday from "@/components/dashboard/appointments-today";
 import QuickActions from "@/components/dashboard/quick-actions";
 import RecentActivity from "@/components/dashboard/recent-activity";
+import type { Activity } from "@/components/dashboard/recent-activity";
 import InventoryAlerts from "@/components/dashboard/inventory-alerts";
+import type { AppointmentWithDetails } from "@shared/schema";
+
+interface DashboardStats {
+  todayAppointments: number;
+  activePatients: number;
+  monthlyRevenue: number;
+  lowStock: number;
+}
 
 export default function Dashboard() {
   const { toast } = useToast();
@@ -30,17 +39,17 @@ export default function Dashboard() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats, isLoading: statsLoading } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
     retry: false,
   });
 
-  const { data: todayAppointments, isLoading: appointmentsLoading } = useQuery({
+  const { data: todayAppointments, isLoading: appointmentsLoading } = useQuery<AppointmentWithDetails[]>({
     queryKey: ["/api/dashboard/today-appointments"],
     retry: false,
   });
 
-  const { data: recentActivity, isLoading: activityLoading } = useQuery({
+  const { data: recentActivity, isLoading: activityLoading } = useQuery<Activity[]>({
     queryKey: ["/api/dashboard/recent-activity"],
     retry: false,
   });

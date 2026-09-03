@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 
-interface Activity {
+export interface Activity {
   id: string;
   description: string;
   user: string | null;
