@@ -1,0 +1,213 @@
+Voy a construirlo sobre el estado **actual** de `main` (fbeff69), no sobre el viejo, para que te calce sin conflictos. Primero verifico cómo quedó la parte de facturas en el repo real (§48 — nada de asumir):
+
+Ahora veo el estado real. Antes de escribir, verifico si el frontend ya crea facturas (para no romper un contrato en uso) — §48:
+
+Confirmado: **no hay UI que cree facturas** (el cliente solo hace `PUT` para marcar pagada). Así que puedo reemplazar el contrato de `POST /api/invoices` por la versión con totales server-side **sin romper ninguna pantalla**. Lo implemento y lo verifico. Veo el encabezado de `routes.ts` para insertar bien:
+
+Todo verificado. Implemento el P0 en mi clon y lo pruebo antes de entregártelo. Empiezo por el helper puro:
+
+Now `storage.ts` — import, input type, interface methods, and implementations:
+
+Now `routes.ts` — add the zod schema after the normalize helpers, and replace the POST block:
+
+Now add the `createInvoiceSchema`. Let me find where the helpers end and `registerRoutes` begins:
+
+Now let me verify my P0 changes are type-clean (the base already has 51 pre-existing client errors from Fase 1; I need to confirm I add **zero** new ones in the files I touched):
+
+Cero errores nuevos. Ahora verifico que el build compila y que la lógica de dinero da bien:
+
+Todo verificado: build OK, **cero** errores de tipo nuevos, y la aritmética da correcta (2×100 + 1×50 = 250, +16% = 40, total **290**). Lo dejo commiteado en mi clon y te entrego el código exacto abajo.
+
+Listo y verificado. Aquí está el **P0 de integridad financiera**, código exacto para pegar (3 archivos). Como el `.patch` se te pierde, te lo doy inline — pégalo tú en Replit, o pásaselo al Replit Agent con: *"aplica estos 3 cambios exactamente, sin tocar otra cosa"*.
+
+---
+
+### 📄 Archivo 1 — NUEVO: `shared/invoice.ts`
+
+```ts
+// Pure invoice math, shared by the server (source of truth for totals) and
+// easily unit-tested without a database.
+
+export interface InvoiceLineInput {
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface InvoiceTotals {
+  subtotal: number;
+  taxAmount: number;
+  totalAmount: number;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Computes invoice totals from line items and a tax rate (0..1).
+ * All values are rounded to 2 decimals.
+ */
+export function computeInvoiceTotals(
+  items: InvoiceLineInput[],
+  taxRate = 0
+): InvoiceTotals {
+  const subtotal = round2(
+    items.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0)
+  );
+  const taxAmount = round2(subtotal * taxRate);
+  const totalAmount = round2(subtotal + taxAmount);
+  return { subtotal, taxAmount, totalAmount };
+}
+```
+
+---
+
+### 📄 Archivo 2 — `server/storage.ts` (3 inserciones)
+
+**2A.** Justo debajo de `import { eq, desc, and, lt, sql, asc } from "drizzle-orm";`, agrega:
+
+```ts
+import { computeInvoiceTotals } from "@shared/invoice";
+
+// Input for server-side invoice creation. Totals are NEVER taken from the
+// client — they are computed here from the line items.
+export interface CreateInvoiceInput {
+  ownerId: string;
+  patientId?: string | null;
+  appointmentId?: string | null;
+  dueDate?: Date | null;
+  notes?: string | null;
+  taxRate?: number; // 0..1 (e.g. 0.16 for 16% IVA)
+  items: {
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    treatmentId?: string | null;
+  }[];
+}
+```
+
+**2B.** En la interfaz `IStorage`, después de la línea `createInvoice(invoice: InsertInvoice): Promise<Invoice>;`, agrega:
+
+```ts
+  createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails>;
+  getNextInvoiceNumber(): Promise<string>;
+```
+
+**2C.** Después del método `async createInvoice(...) { ... }` (el que hace `db.insert(invoices).values(invoice)`), agrega estos dos métodos:
+
+```ts
+  // Sequential, collision-free invoice numbers backed by a Postgres sequence
+  // (replaces `INV-${Date.now()}`, which could collide and isn't ordered).
+  async getNextInvoiceNumber(): Promise<string> {
+    await db.execute(sql`CREATE SEQUENCE IF NOT EXISTS invoice_number_seq`);
+    const result: any = await db.execute(
+      sql`SELECT nextval('invoice_number_seq') AS nextval`
+    );
+    const next = result?.rows?.[0]?.nextval ?? Date.now();
+    return `INV-${String(next).padStart(6, "0")}`;
+  }
+
+  // Creates an invoice and its items in a single transaction, computing all
+  // totals server-side so the client can never dictate the amount charged.
+  async createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails> {
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(
+      input.items,
+      input.taxRate ?? 0
+    );
+    const invoiceNumber = await this.getNextInvoiceNumber();
+
+    const createdId = await db.transaction(async (tx) => {
+      const [inv] = await tx
+        .insert(invoices)
+        .values({
+          invoiceNumber,
+          ownerId: input.ownerId,
+          patientId: input.patientId ?? null,
+          appointmentId: input.appointmentId ?? null,
+          dueDate: input.dueDate ?? null,
+          notes: input.notes ?? null,
+          subtotal: subtotal.toFixed(2),
+          taxAmount: taxAmount.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          status: "pending",
+        })
+        .returning();
+
+      if (input.items.length > 0) {
+        await tx.insert(invoiceItems).values(
+          input.items.map((it) => ({
+            invoiceId: inv.id,
+            treatmentId: it.treatmentId ?? null,
+            description: it.description,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice.toFixed(2),
+            totalPrice: round2(it.quantity * it.unitPrice).toFixed(2),
+          }))
+        );
+      }
+      return inv.id;
+    });
+
+    return (await this.getInvoice(createdId))!;
+  }
+```
+
+---
+
+### 📄 Archivo 3 — `server/routes.ts` (2 cambios)
+
+**3A.** Justo antes de `export async function registerRoutes(app: Express)`, agrega el schema:
+
+```ts
+// Invoice creation: totals are computed server-side from these line items,
+// never taken from the client (financial integrity).
+const createInvoiceSchema = z.object({
+  ownerId: z.string().min(1),
+  patientId: z.string().optional().nullable(),
+  appointmentId: z.string().optional().nullable(),
+  dueDate: z.string().datetime().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(1).optional(),
+  items: z
+    .array(
+      z.object({
+        description: z.string().min(1),
+        quantity: z.number().int().positive(),
+        unitPrice: z.number().nonnegative(),
+        treatmentId: z.string().optional().nullable(),
+      })
+    )
+    .min(1),
+});
+```
+
+**3B.** Dentro de `app.post("/api/invoices", ...)`, reemplaza el bloque del `try` (las líneas de `normalizeDateTimeFields` + `insertInvoiceSchema.parse` + `INV-${Date.now()}` + `storage.createInvoice`) por:
+
+```ts
+      const data = createInvoiceSchema.parse(req.body);
+      const invoice = await storage.createInvoiceWithItems({
+        ...data,
+        dueDate: data.dueDate ? new Date(data.dueDate) : null,
+      });
+      res.status(201).json(invoice);
+```
+
+*(No toques el `PUT /api/invoices/:id` — ese sigue igual y sigue usando `insertInvoiceSchema`.)*
+
+---
+
+### ✅ Cómo probar (en Replit)
+```bash
+npm run check   # no debe agregar errores nuevos (los ~51 de Fase 1 siguen hasta que la hagas)
+npm run build   # debe compilar
+```
+Verificado de mi lado: build OK, 0 errores nuevos, y la aritmética `2×100 + 1×50 @16% = 290` correcta.
+
+### 📝 Notas importantes
+- **Nuevo contrato:** `POST /api/invoices` ahora espera `{ ownerId, items: [{ description, quantity, unitPrice, treatmentId? }], taxRate?, patientId?, dueDate?, notes? }`. El servidor calcula subtotal/impuesto/total. Cuando construyas la UI de "Nueva factura", que mande **items**, no montos.
+- **Números de factura** ahora son secuenciales: `INV-000001`, `INV-000002`… La secuencia se crea sola la primera vez (`CREATE SEQUENCE IF NOT EXISTS`), sin migración manual.
+- **No rompe nada:** no hay pantalla que cree facturas hoy, así que el cambio de contrato es seguro.
+
+---
+
+**Siguiente:** cuando tengas la Fase 1 (TS en verde) hecha por Replit, el mejor P1 es **tests + CI** — ahí te entrego `vitest.config.ts`, los tests (incluido el de esta lógica de facturación) y el workflow de GitHub Actions, todo listo para pegar. ¿Seguimos con ese, o prefieres que prepare el diseño de **autorización por rol** (P1) primero?
