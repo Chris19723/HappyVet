@@ -5,15 +5,17 @@ import { AlertTriangle } from "lucide-react";
 import type { InventoryItem } from "@shared/schema";
 
 export default function InventoryAlerts() {
-  const { data: lowStockItems, isLoading } = useQuery({
+  const { data: lowStockItems, isLoading } = useQuery<InventoryItem[]>({
     queryKey: ["/api/inventory/low-stock"],
     retry: false,
   });
 
   const getAlertLevel = (item: InventoryItem) => {
-    if (item.currentStock <= 0) {
+    const currentStock = item.currentStock ?? 0;
+    const minStock = item.minStock ?? 0;
+    if (currentStock <= 0) {
       return { label: "Crítico", color: "bg-red-100 text-red-800 border-red-200" };
-    } else if (item.currentStock <= item.minStock / 2) {
+    } else if (currentStock <= minStock / 2) {
       return { label: "Muy Bajo", color: "bg-orange-100 text-orange-800 border-orange-200" };
     }
     return { label: "Bajo", color: "bg-yellow-100 text-yellow-800 border-yellow-200" };

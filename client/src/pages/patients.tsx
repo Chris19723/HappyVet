@@ -37,7 +37,7 @@ export default function Patients() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: patients, isLoading: patientsLoading, error } = useQuery({
+  const { data: patients, isLoading: patientsLoading, error } = useQuery<PatientWithOwner[]>({
     queryKey: ["/api/patients"],
     retry: false,
   });

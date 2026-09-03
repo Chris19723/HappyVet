@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { AppointmentWithDetails } from "@shared/schema";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
@@ -30,12 +31,19 @@ export default function Dashboard() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats, isLoading: statsLoading } = useQuery<{
+    todayAppointments: number;
+    activePatients: number;
+    monthlyRevenue: number;
+    lowStock: number;
+  }>({
     queryKey: ["/api/dashboard/stats"],
     retry: false,
   });
 
-  const { data: todayAppointments, isLoading: appointmentsLoading } = useQuery({
+  const { data: todayAppointments, isLoading: appointmentsLoading } = useQuery<
+    AppointmentWithDetails[]
+  >({
     queryKey: ["/api/dashboard/today-appointments"],
     retry: false,
   });

@@ -346,7 +346,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Género</FormLabel>
                 <FormControl>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value ?? undefined}>
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccionar género" />
                     </SelectTrigger>

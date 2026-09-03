@@ -34,7 +34,7 @@ export default function Billing() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: invoices, isLoading: invoicesLoading, error } = useQuery({
+  const { data: invoices, isLoading: invoicesLoading, error } = useQuery<InvoiceWithDetails[]>({
     queryKey: ["/api/invoices"],
     retry: false,
   });
@@ -233,8 +233,8 @@ export default function Billing() {
                           <h3 className="text-lg font-semibold text-slate-900">
                             {invoice.invoiceNumber}
                           </h3>
-                          <Badge className={getStatusColor(invoice.status)}>
-                            {getStatusLabel(invoice.status)}
+                          <Badge className={getStatusColor(invoice.status ?? "")}>
+                            {getStatusLabel(invoice.status ?? "")}
                           </Badge>
                         </div>
                         
@@ -257,7 +257,7 @@ export default function Billing() {
                             <div className="flex items-center space-x-2">
                               <Calendar className="h-4 w-4" />
                               <span>
-                                {format(new Date(invoice.issueDate), "PPP")}
+                                {invoice.issueDate ? format(new Date(invoice.issueDate), "PPP") : "—"}
                               </span>
                             </div>
                           </div>

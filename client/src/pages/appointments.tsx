@@ -38,7 +38,7 @@ export default function Appointments() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: appointments, isLoading: appointmentsLoading, error } = useQuery({
+  const { data: appointments, isLoading: appointmentsLoading, error } = useQuery<AppointmentWithDetails[]>({
     queryKey: ["/api/appointments"],
     retry: false,
   });
@@ -218,8 +218,8 @@ export default function Appointments() {
                             <h3 className="text-lg font-semibold text-slate-900">
                               {appointment.patient.name}
                             </h3>
-                            <Badge className={getStatusColor(appointment.status)}>
-                              {getStatusLabel(appointment.status)}
+                            <Badge className={getStatusColor(appointment.status ?? "")}>
+                              {getStatusLabel(appointment.status ?? "")}
                             </Badge>
                           </div>
                           
