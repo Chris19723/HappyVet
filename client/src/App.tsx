@@ -19,19 +19,15 @@ function Router() {
 
   return (
     <Switch>
-      {isLoading || !isAuthenticated ? (
-        <Route path="/" component={Landing} />
-      ) : (
-        <>
-          <Route path="/" component={Dashboard} />
-          <Route path="/patients" component={Patients} />
-          <Route path="/owners" component={Owners} />
-          <Route path="/appointments" component={Appointments} />
-          <Route path="/medical-records" component={MedicalRecords} />
-          <Route path="/billing" component={Billing} />
-          <Route path="/inventory" component={Inventory} />
-        </>
-      )}
+      <Route path="/patients" component={Patients} />
+      <Route path="/owners" component={Owners} />
+      <Route path="/appointments" component={Appointments} />
+      <Route path="/medical-records" component={MedicalRecords} />
+      <Route path="/billing" component={Billing} />
+      <Route path="/inventory" component={Inventory} />
+      <Route path="/">
+        {isLoading || !isAuthenticated ? <Landing /> : <Dashboard />}
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );
