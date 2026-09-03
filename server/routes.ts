@@ -9,7 +9,6 @@ import {
   insertMedicalRecordSchema,
   insertTreatmentSchema,
   insertInvoiceSchema,
-  insertInvoiceItemSchema,
   insertInventoryItemSchema,
 } from "@shared/schema";
 import { z } from "zod";
@@ -41,6 +40,43 @@ function normalizeDateTimeFields<T extends Record<string, any>>(data: T, fields:
   }
   return normalized as T;
 }
+
+const createInvoiceItemRequestSchema = z.object({
+  description: z.string().trim().min(1),
+  quantity: z.number().int().positive(),
+  unitPrice: z.number().finite().nonnegative().max(999999.99),
+  treatmentId: z.string().min(1).optional().nullable(),
+}).strict().superRefine((item, ctx) => {
+  if (item.quantity * item.unitPrice > 999999.99) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Line total exceeds the supported amount",
+      path: ["quantity"],
+    });
+  }
+});
+
+const createInvoiceRequestSchema = z.object({
+  ownerId: z.string().min(1),
+  patientId: z.string().min(1).optional().nullable(),
+  appointmentId: z.string().min(1).optional().nullable(),
+  dueDate: z.coerce.date().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(1).optional(),
+  items: z.array(createInvoiceItemRequestSchema).min(1).max(100),
+}).strict().superRefine((invoice, ctx) => {
+  const subtotal = invoice.items.reduce(
+    (sum, item) => sum + item.quantity * item.unitPrice,
+    0,
+  );
+  if (subtotal * (1 + (invoice.taxRate ?? 0)) > 99999999.99) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Invoice total exceeds the supported amount",
+      path: ["items"],
+    });
+  }
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
@@ -76,6 +112,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching today's appointments:", error);
       res.status(500).json({ message: "Failed to fetch today's appointments" });
+    }
+  });
+
+  app.get("/api/dashboard/recent-activity", isAuthenticated, async (req, res) => {
+    try {
+      const activity = await storage.getRecentActivity();
+      res.json(activity);
+    } catch (error) {
+      console.error("Error fetching recent activity:", error);
+      res.status(500).json({ message: "Failed to fetch recent activity" });
     }
   });
 
@@ -194,6 +240,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
       const validatedData = insertPatientSchema.partial().parse(payload);
+      // Never overwrite a FK field with an empty string — ignore it so the
+      // existing value is preserved (happens when photo-save triggers a partial update)
+      if (!validatedData.ownerId) delete (validatedData as any).ownerId;
       const patient = await storage.updatePatient(req.params.id, validatedData);
       res.json(patient);
     } catch (error) {
@@ -239,14 +288,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Schema that coerces appointmentDate from ISO string or Date
+  const appointmentCoercedSchema = insertAppointmentSchema.extend({
+    appointmentDate: z.coerce.date(),
+  });
+
   app.post("/api/appointments", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
-      const validatedData = insertAppointmentSchema.parse(payload);
+      const validatedData = appointmentCoercedSchema.parse(req.body);
       const appointment = await storage.createAppointment(validatedData);
       res.status(201).json(appointment);
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.error("Appointment validation error:", JSON.stringify(error.errors));
         return res.status(400).json({ message: "Validation error", errors: error.errors });
       }
       console.error("Error creating appointment:", error);
@@ -256,8 +310,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.put("/api/appointments/:id", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["appointmentDate"]);
-      const validatedData = insertAppointmentSchema.partial().parse(payload);
+      const validatedData = appointmentCoercedSchema.partial().parse(req.body);
       const appointment = await storage.updateAppointment(req.params.id, validatedData);
       res.json(appointment);
     } catch (error) {
@@ -339,6 +392,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/treatments/:id", isAuthenticated, async (req, res) => {
+    try {
+      const validatedData = insertTreatmentSchema.partial().parse(req.body);
+      const treatment = await storage.updateTreatment(req.params.id, validatedData);
+      res.json(treatment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      console.error("Error updating treatment:", error);
+      res.status(500).json({ message: "Failed to update treatment" });
+    }
+  });
+
+  app.delete("/api/treatments/:id", isAuthenticated, async (req, res) => {
+    try {
+      await storage.deleteTreatment(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting treatment:", error);
+      res.status(500).json({ message: "Failed to delete treatment" });
+    }
+  });
+
   // Invoice routes
   app.get("/api/invoices", isAuthenticated, async (req, res) => {
     try {
@@ -365,16 +442,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/invoices", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
-      const validatedData = insertInvoiceSchema.parse(payload);
-      // Generate invoice number
-      const invoiceNumber = `INV-${Date.now()}`;
-      const invoiceData = { ...validatedData, invoiceNumber };
-      const invoice = await storage.createInvoice(invoiceData);
+      const validatedData = createInvoiceRequestSchema.parse(req.body);
+      if (validatedData.appointmentId) {
+        const existingInvoice = await storage.getInvoiceByAppointment(validatedData.appointmentId);
+        if (existingInvoice) {
+          return res.status(409).json({
+            message: "This appointment already has an invoice",
+            invoice: existingInvoice,
+          });
+        }
+      }
+      const invoice = await storage.createInvoiceWithItems(validatedData);
       res.status(201).json(invoice);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      if (error instanceof Error && error.message === "APPOINTMENT_ALREADY_INVOICED") {
+        return res.status(409).json({ message: "This appointment already has an invoice" });
       }
       console.error("Error creating invoice:", error);
       res.status(500).json({ message: "Failed to create invoice" });
@@ -396,20 +481,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/invoices/:id/items", isAuthenticated, async (req, res) => {
+  app.delete("/api/invoices/:id", isAuthenticated, async (req, res) => {
     try {
-      const validatedData = insertInvoiceItemSchema.parse({
-        ...req.body,
-        invoiceId: req.params.id
-      });
-      const item = await storage.addInvoiceItem(validatedData);
-      res.status(201).json(item);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      const invoice = await storage.getInvoice(req.params.id);
+      if (!invoice) {
+        return res.status(404).json({ message: "Invoice not found" });
       }
-      console.error("Error adding invoice item:", error);
-      res.status(500).json({ message: "Failed to add invoice item" });
+      await storage.deleteInvoice(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting invoice:", error);
+      res.status(500).json({ message: "Failed to delete invoice" });
     }
   });
 
