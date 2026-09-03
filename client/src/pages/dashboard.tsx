@@ -40,6 +40,11 @@ export default function Dashboard() {
     retry: false,
   });
 
+  const { data: recentActivity, isLoading: activityLoading } = useQuery({
+    queryKey: ["/api/dashboard/recent-activity"],
+    retry: false,
+  });
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -74,7 +79,7 @@ export default function Dashboard() {
             
             <div className="space-y-6">
               <QuickActions />
-              <RecentActivity />
+              <RecentActivity activities={recentActivity} isLoading={activityLoading} />
             </div>
           </div>
           
