@@ -23,7 +23,6 @@ const CATEGORIES = [
   "Consulta",
   "Vacunación",
   "Cirugía",
-  "Estética",
   "Estética Canina",
   "Diagnóstico",
   "Estudios de Laboratorio",
