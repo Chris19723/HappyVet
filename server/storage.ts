@@ -26,13 +26,27 @@ import {
   type Invoice,
   type InsertInvoice,
   type InvoiceWithDetails,
-  type InvoiceItem,
-  type InsertInvoiceItem,
   type InventoryItem,
   type InsertInventoryItem,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, lt, sql, asc } from "drizzle-orm";
+import { computeInvoiceLineTotal, computeInvoiceTotals } from "@shared/invoice";
+
+export interface CreateInvoiceInput {
+  ownerId: string;
+  patientId?: string | null;
+  appointmentId?: string | null;
+  dueDate?: Date | null;
+  notes?: string | null;
+  taxRate?: number;
+  items: {
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    treatmentId?: string | null;
+  }[];
+}
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -81,10 +95,10 @@ export interface IStorage {
   // Invoice operations
   getInvoices(): Promise<InvoiceWithDetails[]>;
   getInvoice(id: string): Promise<InvoiceWithDetails | undefined>;
-  createInvoice(invoice: InsertInvoice): Promise<Invoice>;
+  getInvoiceByAppointment(appointmentId: string): Promise<Invoice | undefined>;
+  createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails>;
   updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice>;
   deleteInvoice(id: string): Promise<void>;
-  addInvoiceItem(item: InsertInvoiceItem): Promise<InvoiceItem>;
 
   // Inventory operations
   getInventoryItems(): Promise<InventoryItem[]>;
@@ -101,6 +115,13 @@ export interface IStorage {
     monthlyRevenue: number;
     lowStock: number;
   }>;
+  getRecentActivity(): Promise<{
+    id: string;
+    type: "success" | "info" | "warning";
+    description: string;
+    user: string | null;
+    timestamp: Date;
+  }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -499,9 +520,81 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async createInvoice(invoice: InsertInvoice): Promise<Invoice> {
-    const [created] = await db.insert(invoices).values(invoice).returning();
-    return created;
+  async getInvoiceByAppointment(appointmentId: string): Promise<Invoice | undefined> {
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.appointmentId, appointmentId))
+      .orderBy(desc(invoices.issueDate))
+      .limit(1);
+    return invoice;
+  }
+
+  async createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails> {
+    const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(
+      input.items,
+      input.taxRate ?? 0,
+    );
+
+    const invoiceId = await db.transaction(async (tx) => {
+      if (input.appointmentId) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.appointmentId}))`);
+        const [existingInvoice] = await tx
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(eq(invoices.appointmentId, input.appointmentId))
+          .limit(1);
+        if (existingInvoice) {
+          throw new Error("APPOINTMENT_ALREADY_INVOICED");
+        }
+      }
+
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('invoice_number_seq_init'))`);
+      await tx.execute(sql`create sequence if not exists invoice_number_seq start with 1`);
+      const sequenceResult = await tx.execute(
+        sql`select nextval('invoice_number_seq') as nextval`,
+      );
+      const nextValue = sequenceResult.rows?.[0]?.nextval;
+      if (nextValue === undefined || nextValue === null) {
+        throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
+      }
+      const invoiceNumber = `INV-${String(nextValue).padStart(6, "0")}`;
+
+      const [created] = await tx
+        .insert(invoices)
+        .values({
+          invoiceNumber,
+          ownerId: input.ownerId,
+          patientId: input.patientId ?? null,
+          appointmentId: input.appointmentId ?? null,
+          dueDate: input.dueDate ?? null,
+          notes: input.notes ?? null,
+          subtotal: subtotal.toFixed(2),
+          taxAmount: taxAmount.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          status: "pending",
+        })
+        .returning({ id: invoices.id });
+
+      await tx.insert(invoiceItems).values(
+        input.items.map((item) => ({
+          invoiceId: created.id,
+          treatmentId: item.treatmentId ?? null,
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice.toFixed(2),
+          totalPrice: computeInvoiceLineTotal(item).toFixed(2),
+        })),
+      );
+
+      return created.id;
+    });
+
+    const invoice = await this.getInvoice(invoiceId);
+    if (!invoice) {
+      throw new Error("CREATED_INVOICE_NOT_FOUND");
+    }
+    return invoice;
   }
 
   async updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice> {
@@ -514,12 +607,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInvoice(id: string): Promise<void> {
-    await db.delete(invoices).where(eq(invoices.id, id));
-  }
-
-  async addInvoiceItem(item: InsertInvoiceItem): Promise<InvoiceItem> {
-    const [created] = await db.insert(invoiceItems).values(item).returning();
-    return created;
+    await db.transaction(async (tx) => {
+      await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
+      await tx.delete(invoices).where(eq(invoices.id, id));
+    });
   }
 
   // Inventory operations
@@ -618,6 +709,83 @@ export class DatabaseStorage implements IStorage {
       monthlyRevenue: Number(monthlyRevenueResult.total),
       lowStock: Number(lowStockResult.count),
     };
+  }
+
+  async getRecentActivity(): Promise<{
+    id: string;
+    type: "success" | "info" | "warning";
+    description: string;
+    user: string | null;
+    timestamp: Date;
+  }[]> {
+    const result = await db.execute(sql`
+      SELECT id, type, description, activity_user AS "user", activity_timestamp AS timestamp
+      FROM (
+        SELECT
+          'appointment-' || a.id AS id,
+          'info' AS type,
+          'Nueva cita programada para ' || COALESCE(p.name, 'paciente') AS description,
+          NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '') AS activity_user,
+          a.created_at AS activity_timestamp
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.patient_id
+        LEFT JOIN users u ON u.id = a.veterinarian_id
+
+        UNION ALL
+
+        SELECT
+          'invoice-' || i.id,
+          'warning',
+          'Factura ' || i.invoice_number || ' generada para ' || COALESCE(p.name, 'paciente'),
+          NULL,
+          i.created_at
+        FROM invoices i
+        LEFT JOIN patients p ON p.id = i.patient_id
+
+        UNION ALL
+
+        SELECT
+          'patient-' || p.id,
+          'success',
+          'Nuevo paciente registrado: ' || p.name,
+          NULL,
+          p.created_at
+        FROM patients p
+
+        UNION ALL
+
+        SELECT
+          'owner-' || o.id,
+          'success',
+          'Nuevo propietario registrado: ' || o.first_name || ' ' || o.last_name,
+          NULL,
+          o.created_at
+        FROM owners o
+
+        UNION ALL
+
+        SELECT
+          'medical-record-' || m.id,
+          'success',
+          'Expediente médico actualizado para ' || COALESCE(p.name, 'paciente'),
+          NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+          m.created_at
+        FROM medical_records m
+        LEFT JOIN patients p ON p.id = m.patient_id
+        LEFT JOIN users u ON u.id = m.veterinarian_id
+      ) activities
+      WHERE activity_timestamp IS NOT NULL
+      ORDER BY activity_timestamp DESC
+      LIMIT 6
+    `);
+
+    return result.rows as {
+      id: string;
+      type: "success" | "info" | "warning";
+      description: string;
+      user: string | null;
+      timestamp: Date;
+    }[];
   }
 }
 
