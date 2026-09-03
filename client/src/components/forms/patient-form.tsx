@@ -31,7 +31,8 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
   const { toast } = useToast();
   const [patientPhotoUrl, setPatientPhotoUrl] = useState<string | null>(null);
   const [ownerPhotoUrl, setOwnerPhotoUrl] = useState<string | null>(null);
-  const [selectedOwner, setSelectedOwner] = useState<any>(null);
+  const [patientPhotoChanged, setPatientPhotoChanged] = useState(false);
+  const [ownerPhotoChanged, setOwnerPhotoChanged] = useState(false);
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -64,6 +65,15 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
         ownerId: patient.ownerId,
         notes: patient.notes || "",
       });
+      setPatientPhotoUrl(patient.photoUrl ?? null);
+      setOwnerPhotoUrl(patient.owner.photoUrl ?? null);
+      setPatientPhotoChanged(false);
+      setOwnerPhotoChanged(false);
+    } else {
+      setPatientPhotoUrl(null);
+      setOwnerPhotoUrl(null);
+      setPatientPhotoChanged(false);
+      setOwnerPhotoChanged(false);
     }
   }, [patient, form]);
 
@@ -104,11 +114,14 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     mutationFn: async (data: InsertPatient) => {
       await apiRequest("PUT", `/api/patients/${patient!.id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      if (patient && (patientPhotoChanged || ownerPhotoChanged)) {
+        await savePhotos(patient.id, form.getValues("ownerId"));
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
       toast({
-        title: "Success",
-        description: "Patient updated successfully",
+        title: "Paciente actualizado",
+        description: "Los datos y fotografías se guardaron correctamente.",
       });
       onSuccess();
     },
@@ -145,19 +158,21 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
   const handlePatientPhotoComplete = (result: { successful: Array<{ uploadURL: string }>; failed: unknown[] }) => {
     if (result.successful && result.successful.length > 0) {
       setPatientPhotoUrl(result.successful[0].uploadURL || null);
+      setPatientPhotoChanged(true);
     }
   };
 
   const handleOwnerPhotoComplete = (result: { successful: Array<{ uploadURL: string }>; failed: unknown[] }) => {
     if (result.successful && result.successful.length > 0) {
       setOwnerPhotoUrl(result.successful[0].uploadURL || null);
+      setOwnerPhotoChanged(true);
     }
   };
 
   const savePhotos = async (patientId: string, ownerId: string) => {
     try {
       // Save patient photo if uploaded
-      if (patientPhotoUrl) {
+      if (patientPhotoChanged && patientPhotoUrl) {
         await apiRequest("PUT", "/api/patient-photos", {
           patientId,
           photoURL: patientPhotoUrl,
@@ -165,7 +180,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
       }
 
       // Save owner photo if uploaded
-      if (ownerPhotoUrl) {
+      if (ownerPhotoChanged && ownerPhotoUrl) {
         await apiRequest("PUT", "/api/owner-photos", {
           ownerId,
           photoURL: ownerPhotoUrl,
@@ -188,14 +203,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     };
 
     if (patient) {
-      updateMutation.mutate(submitData, {
-        onSuccess: () => {
-          // Save photos after successful update
-          if (patientPhotoUrl || ownerPhotoUrl) {
-            savePhotos(patient.id, data.ownerId);
-          }
-        }
-      });
+      updateMutation.mutate(submitData);
     } else {
       // For new patients, we need to get the created patient ID first
       try {
@@ -203,7 +211,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
         const newPatient = await response.json();
         
         // Save photos if any were uploaded
-        if (patientPhotoUrl || ownerPhotoUrl) {
+        if (patientPhotoChanged || ownerPhotoChanged) {
           await savePhotos(newPatient.id, data.ownerId);
         }
 
@@ -260,7 +268,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Propietario *</FormLabel>
                 <FormControl>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value || undefined}>
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccionar propietario" />
                     </SelectTrigger>
@@ -287,7 +295,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Especie *</FormLabel>
                 <FormControl>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value || undefined}>
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccionar especie" />
                     </SelectTrigger>
@@ -343,7 +351,7 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
               <FormItem>
                 <FormLabel>Género</FormLabel>
                 <FormControl>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value || undefined}>
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccionar género" />
                     </SelectTrigger>

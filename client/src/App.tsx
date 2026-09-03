@@ -8,6 +8,7 @@ import NotFound from "@/pages/not-found";
 import Landing from "@/pages/landing";
 import Dashboard from "@/pages/dashboard";
 import Patients from "@/pages/patients";
+import PatientDetail from "@/pages/patient-detail";
 import Owners from "@/pages/owners";
 import Appointments from "@/pages/appointments";
 import MedicalRecords from "@/pages/medical-records";
@@ -20,6 +21,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/patients" component={Patients} />
+      <Route path="/patients/:id" component={PatientDetail} />
       <Route path="/owners" component={Owners} />
       <Route path="/appointments" component={Appointments} />
       <Route path="/medical-records" component={MedicalRecords} />

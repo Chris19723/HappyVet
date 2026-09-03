@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
@@ -19,6 +20,7 @@ import type { PatientWithOwner } from "@shared/schema";
 export default function Patients() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
+  const [, setLocation] = useLocation();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<PatientWithOwner | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -37,7 +39,7 @@ export default function Patients() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: patients, isLoading: patientsLoading, error } = useQuery({
+  const { data: patients, isLoading: patientsLoading, error } = useQuery<PatientWithOwner[]>({
     queryKey: ["/api/patients"],
     retry: false,
   });
@@ -189,7 +191,18 @@ export default function Patients() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredPatients.map((patient: PatientWithOwner) => (
-                <Card key={patient.id} className="hover:shadow-lg transition-shadow">
+                <Card
+                  key={patient.id}
+                  className="cursor-pointer hover:shadow-lg hover:border-blue-200 transition-all"
+                  onClick={() => setLocation(`/patients/${patient.id}`)}
+                  role="link"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      setLocation(`/patients/${patient.id}`);
+                    }
+                  }}
+                >
                   <CardHeader className="pb-3">
                     <div className="flex items-center space-x-3">
                       <Avatar className="h-12 w-12">
@@ -233,7 +246,8 @@ export default function Patients() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
+                          onClick={(event) => {
+                            event.stopPropagation();
                             setSelectedPatient(patient);
                             setIsFormOpen(true);
                           }}
@@ -243,7 +257,10 @@ export default function Patients() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => deleteMutation.mutate(patient.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteMutation.mutate(patient.id);
+                          }}
                           disabled={deleteMutation.isPending}
                         >
                           <Trash2 className="h-4 w-4" />
