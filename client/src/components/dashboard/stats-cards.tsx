@@ -1,5 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { Calendar, Heart, DollarSign, AlertTriangle } from "lucide-react";
+import { Calendar, Heart, AlertTriangle } from "lucide-react";
+import RevenueCard from "@/components/dashboard/revenue-card";
 
 interface StatsCardsProps {
   stats?: {
@@ -9,6 +10,38 @@ interface StatsCardsProps {
     lowStock: number;
   };
   isLoading: boolean;
+}
+
+type StatCard = {
+  title: string;
+  value: number | string;
+  change: string;
+  icon: typeof Calendar;
+  color: string;
+  bgColor: string;
+  changeColor?: string;
+};
+
+function StatCardView({ stat }: { stat: StatCard }) {
+  const Icon = stat.icon;
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-slate-600">{stat.title}</p>
+            <p className="text-3xl font-bold text-slate-900 mt-1">{stat.value}</p>
+            <p className={`text-sm mt-1 ${stat.changeColor || "text-success"}`}>
+              {stat.change}
+            </p>
+          </div>
+          <div className={`w-12 h-12 ${stat.bgColor} rounded-lg flex items-center justify-center`}>
+            <Icon className={`w-6 h-6 ${stat.color}`} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function StatsCards({ stats, isLoading }: StatsCardsProps) {
@@ -28,65 +61,40 @@ export default function StatsCards({ stats, isLoading }: StatsCardsProps) {
     );
   }
 
-  const statsData = [
-    {
-      title: "Citas Hoy",
-      value: stats?.todayAppointments ?? 0,
-      change: "+3 vs ayer",
-      icon: Calendar,
-      color: "text-primary",
-      bgColor: "bg-primary/10",
-    },
-    {
-      title: "Pacientes Activos",
-      value: stats?.activePatients ?? 0,
-      change: "+15 este mes",
-      icon: Heart,
-      color: "text-secondary",
-      bgColor: "bg-secondary/10",
-    },
-    {
-      title: "Ingresos Mensuales",
-      value: `$${(Number(stats?.monthlyRevenue) || 0).toFixed(2)} MXN`,
-      change: "+8.2% vs mes anterior",
-      icon: DollarSign,
-      color: "text-warning",
-      bgColor: "bg-warning/10",
-    },
-    {
-      title: "Stock Bajo",
-      value: stats?.lowStock ?? 0,
-      change: "Requiere atención",
-      icon: AlertTriangle,
-      color: "text-destructive",
-      bgColor: "bg-destructive/10",
-      changeColor: "text-destructive",
-    },
-  ];
+  const appointmentsCard: StatCard = {
+    title: "Citas Hoy",
+    value: stats?.todayAppointments ?? 0,
+    change: "+3 vs ayer",
+    icon: Calendar,
+    color: "text-primary",
+    bgColor: "bg-primary/10",
+  };
+
+  const patientsCard: StatCard = {
+    title: "Pacientes Activos",
+    value: stats?.activePatients ?? 0,
+    change: "+15 este mes",
+    icon: Heart,
+    color: "text-secondary",
+    bgColor: "bg-secondary/10",
+  };
+
+  const lowStockCard: StatCard = {
+    title: "Stock Bajo",
+    value: stats?.lowStock ?? 0,
+    change: "Requiere atención",
+    icon: AlertTriangle,
+    color: "text-destructive",
+    bgColor: "bg-destructive/10",
+    changeColor: "text-destructive",
+  };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-      {statsData.map((stat) => {
-        const Icon = stat.icon;
-        return (
-          <Card key={stat.title}>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-slate-600">{stat.title}</p>
-                  <p className="text-3xl font-bold text-slate-900 mt-1">{stat.value}</p>
-                  <p className={`text-sm mt-1 ${stat.changeColor || "text-success"}`}>
-                    {stat.change}
-                  </p>
-                </div>
-                <div className={`w-12 h-12 ${stat.bgColor} rounded-lg flex items-center justify-center`}>
-                  <Icon className={`w-6 h-6 ${stat.color}`} />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        );
-      })}
+      <StatCardView stat={appointmentsCard} />
+      <StatCardView stat={patientsCard} />
+      <RevenueCard />
+      <StatCardView stat={lowStockCard} />
     </div>
   );
 }

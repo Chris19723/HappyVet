@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { getDayRangeInTimeZone, getMonthRangeInTimeZone } from "@shared/time";
+import {
+  getDayRangeInTimeZone,
+  getMonthRangeInTimeZone,
+  getWeekRangeInTimeZone,
+  getRangeFromDayStringsInTimeZone,
+} from "@shared/time";
 
 const MX = "America/Mexico_City"; // UTC-6, no DST since 2022
 
@@ -40,5 +45,42 @@ describe("getMonthRangeInTimeZone", () => {
     const { start, end } = getMonthRangeInTimeZone(new Date("2026-09-15T12:00:00Z"), MX);
     expect(start.toISOString()).toBe("2026-09-01T06:00:00.000Z");
     expect(end.toISOString()).toBe("2026-10-01T06:00:00.000Z");
+  });
+});
+
+describe("getWeekRangeInTimeZone", () => {
+  it("starts on Monday and spans 7 days, in the clinic timezone", () => {
+    const { start, end } = getWeekRangeInTimeZone(new Date("2026-09-04T12:00:00Z"), MX);
+    // Local Monday midnight in Mexico (UTC-6) is 06:00Z, and 06:00Z Monday has UTC weekday 1.
+    expect(start.getUTCDay()).toBe(1);
+    expect(start.toISOString().endsWith("T06:00:00.000Z")).toBe(true);
+    expect(end.getTime() - start.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("contains the reference day", () => {
+    const now = new Date("2026-09-04T12:00:00Z");
+    const { start, end } = getWeekRangeInTimeZone(now, MX);
+    expect(now >= start && now < end).toBe(true);
+  });
+});
+
+describe("getRangeFromDayStringsInTimeZone", () => {
+  it("covers the inclusive range with the whole last day", () => {
+    const range = getRangeFromDayStringsInTimeZone("2026-09-01", "2026-09-15", MX);
+    expect(range).not.toBeNull();
+    expect(range!.start.toISOString()).toBe("2026-09-01T06:00:00.000Z");
+    // End is the start of the day AFTER the 15th, so the 15th is fully included.
+    expect(range!.end.toISOString()).toBe("2026-09-16T06:00:00.000Z");
+  });
+
+  it("accepts a single-day range", () => {
+    const range = getRangeFromDayStringsInTimeZone("2026-09-04", "2026-09-04", MX);
+    expect(range!.start.toISOString()).toBe("2026-09-04T06:00:00.000Z");
+    expect(range!.end.toISOString()).toBe("2026-09-05T06:00:00.000Z");
+  });
+
+  it("rejects a reversed or malformed range", () => {
+    expect(getRangeFromDayStringsInTimeZone("2026-09-15", "2026-09-01", MX)).toBeNull();
+    expect(getRangeFromDayStringsInTimeZone("nope", "2026-09-01", MX)).toBeNull();
   });
 });

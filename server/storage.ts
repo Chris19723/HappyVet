@@ -175,6 +175,7 @@ export interface IStorage {
     monthlyRevenue: number;
     lowStock: number;
   }>;
+  getRevenueBetween(start: Date, end: Date): Promise<number>;
   getRecentActivity(): Promise<{
     id: string;
     type: "success" | "info" | "warning";
@@ -931,6 +932,22 @@ export class DatabaseStorage implements IStorage {
       monthlyRevenue: Number(monthlyRevenueResult.total),
       lowStock: Number(lowStockResult.count),
     };
+  }
+
+  // Total paid revenue with issueDate in [start, end). Same criteria as the
+  // dashboard's monthly revenue (status = paid), for an arbitrary period.
+  async getRevenueBetween(start: Date, end: Date): Promise<number> {
+    const [result] = await db
+      .select({ total: sql<number>`COALESCE(sum(${invoices.totalAmount}), 0)` })
+      .from(invoices)
+      .where(
+        and(
+          sql`${invoices.issueDate} >= ${start}`,
+          sql`${invoices.issueDate} < ${end}`,
+          eq(invoices.status, "paid")
+        )
+      );
+    return Number(result.total);
   }
 
   async getRecentActivity(): Promise<{
