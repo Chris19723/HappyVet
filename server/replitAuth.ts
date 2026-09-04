@@ -54,15 +54,29 @@ function updateUserSession(
   user.expires_at = user.claims?.exp;
 }
 
+// Emails (comma-separated, ADMIN_EMAILS secret) that are granted the "admin"
+// role automatically on login. Read per-call so it can't be stale.
+function adminEmails(): string[] {
+  return (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 async function upsertUser(
   claims: any,
 ) {
+  const email = claims["email"];
+  const isAdmin = !!email && adminEmails().includes(String(email).toLowerCase());
   await storage.upsertUser({
     id: claims["sub"],
-    email: claims["email"],
+    email,
     firstName: claims["first_name"],
     lastName: claims["last_name"],
     profileImageUrl: claims["profile_image_url"],
+    // Only set the role for designated admins, so we never overwrite a role
+    // assigned to a normal user. New users keep the DB default.
+    ...(isAdmin ? { role: "admin" } : {}),
   });
 }
 
@@ -159,3 +173,31 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
     return;
   }
 };
+
+// Role gate. Use AFTER isAuthenticated, e.g. requireRole("admin").
+// Dormant until ADMIN_EMAILS is configured, so enabling roles never locks out
+// existing users before an admin has been designated + has logged in.
+export function requireRole(...roles: string[]): RequestHandler {
+  return async (req, res, next) => {
+    if (adminEmails().length === 0) {
+      return next(); // roles not enforced yet
+    }
+    const sub = (req as any).user?.claims?.sub;
+    if (!sub) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    try {
+      const user = await storage.getUser(sub);
+      if (user && roles.includes(user.role ?? "")) {
+        return next();
+      }
+      return res.status(403).json({
+        message: `Acción restringida: requiere rol ${roles.join(" o ")}.`,
+        code: "FORBIDDEN_ROLE",
+      });
+    } catch (err) {
+      console.error("[requireRole] error:", err);
+      return res.status(500).json({ message: "Error verificando permisos." });
+    }
+  };
+}

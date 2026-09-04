@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
+import { setupAuth, isAuthenticated, requireRole } from "./replitAuth";
 import { 
   insertOwnerSchema,
   insertPatientSchema,
@@ -176,7 +176,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/owners/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/owners/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       await storage.deleteOwner(req.params.id);
       res.status(204).send();
@@ -253,7 +253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/patients/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/patients/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       await storage.deletePatient(req.params.id);
       res.status(204).send();
@@ -321,7 +321,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/appointments/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/appointments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       await storage.deleteAppointment(req.params.id);
       res.status(204).send();
@@ -377,7 +377,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/treatments", isAuthenticated, async (req, res) => {
+  app.post("/api/treatments", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       const validatedData = insertTreatmentSchema.parse(req.body);
       const treatment = await storage.createTreatment(validatedData);
@@ -391,7 +391,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/treatments/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/treatments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       const validatedData = insertTreatmentSchema.partial().parse(req.body);
       const treatment = await storage.updateTreatment(req.params.id, validatedData);
@@ -405,7 +405,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/treatments/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/treatments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       await storage.deleteTreatment(req.params.id);
       res.status(204).send();
@@ -508,7 +508,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/invoices/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/invoices/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       const invoice = await storage.getInvoice(req.params.id);
       if (!invoice) {
@@ -543,7 +543,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/inventory", isAuthenticated, async (req, res) => {
+  app.post("/api/inventory", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       const validatedData = insertInventoryItemSchema.parse(req.body);
       const item = await storage.createInventoryItem(validatedData);
@@ -557,7 +557,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/inventory/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/inventory/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       const validatedData = insertInventoryItemSchema.partial().parse(req.body);
       const item = await storage.updateInventoryItem(req.params.id, validatedData);
@@ -571,7 +571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/inventory/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/inventory/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
     try {
       await storage.deleteInventoryItem(req.params.id);
       res.status(204).send();
