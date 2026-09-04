@@ -13,8 +13,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+
+      # The runner's bundled npm intermittently aborts `npm ci` with
+      # "Exit handler never called!", leaving dev deps (typescript, vitest)
+      # uninstalled. A current npm avoids that bug.
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm ci

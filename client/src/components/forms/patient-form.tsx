@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { ObjectUploader } from "@/components/ObjectUploader";
 import { insertPatientSchema, type PatientWithOwner, type InsertPatient } from "@shared/schema";
+import { SPECIES_OPTIONS } from "@shared/species";
 import { Camera, User } from "lucide-react";
 import type { z } from "zod";
 
@@ -309,12 +310,18 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
                       <SelectValue placeholder="Seleccionar especie" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="perro">Perro</SelectItem>
-                      <SelectItem value="gato">Gato</SelectItem>
-                      <SelectItem value="ave">Ave</SelectItem>
-                      <SelectItem value="reptil">Reptil</SelectItem>
-                      <SelectItem value="roedor">Roedor</SelectItem>
-                      <SelectItem value="otro">Otro</SelectItem>
+                      {/* Preserve a legacy value (e.g. an older patient saved
+                          as "perro") so editing doesn't clear the species. */}
+                      {field.value && !SPECIES_OPTIONS.includes(field.value) && (
+                        <SelectItem value={field.value} className="capitalize">
+                          {field.value}
+                        </SelectItem>
+                      )}
+                      {SPECIES_OPTIONS.map((species) => (
+                        <SelectItem key={species} value={species}>
+                          {species}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </FormControl>

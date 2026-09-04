@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Plus, Search, Edit, Trash2, Heart } from "lucide-react";
 import PatientForm from "@/components/forms/patient-form";
 import type { PatientWithOwner } from "@shared/schema";
+import { getSpeciesColor } from "@shared/species";
 
 export default function Patients() {
   const { toast } = useToast();
@@ -95,15 +96,6 @@ export default function Patients() {
     patient.breed?.toLowerCase().includes(searchTerm.toLowerCase())
   ) || [];
 
-  const getSpeciesColor = (species: string) => {
-    const colors = {
-      perro: "bg-blue-100 text-blue-800",
-      gato: "bg-purple-100 text-purple-800",
-      ave: "bg-green-100 text-green-800",
-      otro: "bg-gray-100 text-gray-800",
-    };
-    return colors[species.toLowerCase() as keyof typeof colors] || colors.otro;
-  };
 
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
