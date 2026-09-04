@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { isUnauthorizedError } from "@/lib/authUtils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -178,7 +179,16 @@ export default function ServicesInvoiceModal({
     } catch (err) {
       console.error("Error generating invoice:", err);
       const msg = err instanceof Error ? err.message : "";
-      if (msg.includes("INSUFFICIENT_STOCK")) {
+      if (err instanceof Error && isUnauthorizedError(err)) {
+        toast({
+          title: "Sesión expirada",
+          description: "Tu sesión terminó. Inicia sesión nuevamente para generar la factura.",
+          variant: "destructive",
+        });
+        setTimeout(() => {
+          window.location.href = "/api/login";
+        }, 500);
+      } else if (msg.includes("INSUFFICIENT_STOCK")) {
         toast({ title: "Sin stock suficiente", description: "Uno de los productos no tiene stock suficiente. Ajusta la cantidad o repón inventario.", variant: "destructive" });
       } else {
         toast({ title: "Error", description: "No se pudo generar la factura.", variant: "destructive" });
