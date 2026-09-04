@@ -14,10 +14,46 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import {
+  getDayRangeInTimeZone,
+  getWeekRangeInTimeZone,
+  getMonthRangeInTimeZone,
+  getRangeFromDayStringsInTimeZone,
+} from "@shared/time";
+import {
   ObjectStorageService,
   ObjectNotFoundError,
 } from "./objectStorage.js";
 import { ObjectPermission } from "./objectAcl.js";
+
+// Clinic timezone anchors revenue periods (matches server/storage.ts).
+const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
+
+// Human-readable Spanish label for a revenue period, in the clinic timezone.
+function buildRevenueLabel(
+  period: string,
+  range: { start: Date; end: Date },
+  timeZone: string,
+): string {
+  const lastDay = new Date(range.end.getTime() - 1); // end is exclusive
+  const day = (d: Date) =>
+    new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short" }).format(d);
+  const dayYear = (d: Date) =>
+    new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short", year: "numeric" }).format(d);
+  const monthYear = (d: Date) => {
+    const s = new Intl.DateTimeFormat("es-MX", { timeZone, month: "long", year: "numeric" }).format(d);
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+  switch (period) {
+    case "day":
+      return "Hoy";
+    case "week":
+      return `${day(range.start)} – ${day(lastDay)}`;
+    case "month":
+      return monthYear(range.start);
+    default:
+      return `${day(range.start)} – ${dayYear(lastDay)}`;
+  }
+}
 
 function normalizeDateOnlyFields<T extends Record<string, any>>(data: T, fields: string[]): T {
   const normalized: Record<string, any> = { ...data };
@@ -110,6 +146,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching recent activity:", error);
       res.status(500).json({ message: "Failed to fetch recent activity" });
+    }
+  });
+
+  // Paid revenue for a period: ?period=day|week|month (anchored to the clinic
+  // timezone) or ?from=YYYY-MM-DD&to=YYYY-MM-DD for a custom inclusive range.
+  app.get("/api/dashboard/revenue", isAuthenticated, async (req, res) => {
+    try {
+      const now = new Date();
+      const period = String(req.query.period ?? "month");
+      const fromQ = req.query.from ? String(req.query.from) : undefined;
+      const toQ = req.query.to ? String(req.query.to) : undefined;
+
+      let range: { start: Date; end: Date } | null;
+      let resolvedPeriod = period;
+
+      if (fromQ || toQ) {
+        if (!fromQ || !toQ) {
+          return res.status(400).json({ message: "Indica ambas fechas: from y to." });
+        }
+        range = getRangeFromDayStringsInTimeZone(fromQ, toQ, CLINIC_TIMEZONE);
+        resolvedPeriod = "custom";
+        if (!range) {
+          return res.status(400).json({ message: "Rango de fechas inválido." });
+        }
+      } else if (period === "day") {
+        range = getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
+      } else if (period === "week") {
+        range = getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
+      } else if (period === "month") {
+        range = getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
+      } else {
+        return res.status(400).json({ message: "Periodo inválido. Usa day, week, month o from/to." });
+      }
+
+      const total = await storage.getRevenueBetween(range.start, range.end);
+      res.json({
+        period: resolvedPeriod,
+        from: range.start.toISOString(),
+        to: range.end.toISOString(),
+        total,
+        label: buildRevenueLabel(resolvedPeriod, range, CLINIC_TIMEZONE),
+      });
+    } catch (error) {
+      console.error("Error fetching revenue:", error);
+      res.status(500).json({ message: "Failed to fetch revenue" });
     }
   });
 

@@ -79,3 +79,47 @@ export function getMonthRangeInTimeZone(
   const end = zonedWallTimeToUtc(year, month + 1, 1, 0, 0, 0, timeZone);
   return { start, end };
 }
+
+// [start, end) UTC instants for the week (Monday–Sunday) that `now` falls on in
+// `timeZone`. Monday-start matches the local convention.
+export function getWeekRangeInTimeZone(
+  now: Date,
+  timeZone: string,
+): { start: Date; end: Date } {
+  const { year, month, day } = getZonedParts(now, timeZone);
+  // Weekday of the calendar date (0=Sun..6=Sat) is timezone-independent once
+  // we have Y/M/D. Days since Monday: Mon->0 ... Sun->6.
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  const sinceMonday = (dow + 6) % 7;
+  const start = zonedWallTimeToUtc(year, month, day - sinceMonday, 0, 0, 0, timeZone);
+  const end = zonedWallTimeToUtc(year, month, day - sinceMonday + 7, 0, 0, 0, timeZone);
+  return { start, end };
+}
+
+// [start, end) UTC instants covering the inclusive calendar range from `fromYMD`
+// to `toYMD` (both "YYYY-MM-DD") as seen in `timeZone`. `end` is the start of the
+// day AFTER `toYMD`, so the whole `toYMD` day is included. Returns null if the
+// strings are malformed or `from` is after `to`.
+export function getRangeFromDayStringsInTimeZone(
+  fromYMD: string,
+  toYMD: string,
+  timeZone: string,
+): { start: Date; end: Date } | null {
+  const parse = (s: string) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return null;
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return { year, month, day };
+  };
+  const from = parse(fromYMD);
+  const to = parse(toYMD);
+  if (!from || !to) return null;
+
+  const start = zonedWallTimeToUtc(from.year, from.month, from.day, 0, 0, 0, timeZone);
+  const end = zonedWallTimeToUtc(to.year, to.month, to.day + 1, 0, 0, 0, timeZone);
+  if (start.getTime() >= end.getTime()) return null;
+  return { start, end };
+}
