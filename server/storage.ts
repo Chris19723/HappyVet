@@ -32,7 +32,7 @@ import {
   type InsertInventoryItem,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, lt, sql, asc, gte } from "drizzle-orm";
+import { eq, desc, and, lt, sql, asc, gte, isNotNull } from "drizzle-orm";
 import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
 
 // Input for server-side invoice creation. Totals are NEVER taken from the
@@ -712,17 +712,88 @@ export class DatabaseStorage implements IStorage {
     return invoice;
   }
 
+  // Return the product quantities of an invoice back to inventory. Stock is
+  // considered "consumed" while an invoice is active and must be released
+  // exactly once when the invoice is cancelled or deleted. Callers guard the
+  // double-release by checking the invoice status transition, so this helper
+  // just adds the quantities back.
+  private async restoreStockForInvoice(tx: any, invoiceId: string): Promise<void> {
+    const productLines = await tx
+      .select({
+        inventoryItemId: invoiceItems.inventoryItemId,
+        quantity: invoiceItems.quantity,
+      })
+      .from(invoiceItems)
+      .where(
+        and(
+          eq(invoiceItems.invoiceId, invoiceId),
+          isNotNull(invoiceItems.inventoryItemId)
+        )
+      );
+
+    // Aggregate so a product spread across several lines is restored once.
+    const productQty = new Map<string, number>();
+    for (const line of productLines) {
+      if (!line.inventoryItemId) continue;
+      productQty.set(
+        line.inventoryItemId,
+        (productQty.get(line.inventoryItemId) ?? 0) + (line.quantity ?? 0)
+      );
+    }
+
+    for (const [inventoryItemId, qty] of Array.from(productQty.entries())) {
+      if (qty <= 0) continue;
+      await tx
+        .update(inventoryItems)
+        .set({
+          currentStock: sql`coalesce(${inventoryItems.currentStock}, 0) + ${qty}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(inventoryItems.id, inventoryItemId));
+    }
+  }
+
   async updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice> {
-    const [updated] = await db
-      .update(invoices)
-      .set({ ...invoice, updatedAt: new Date() })
-      .where(eq(invoices.id, id))
-      .returning();
-    return updated;
+    return await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, id))
+        .limit(1);
+
+      const [updated] = await tx
+        .update(invoices)
+        .set({ ...invoice, updatedAt: new Date() })
+        .where(eq(invoices.id, id))
+        .returning();
+
+      // Release stock exactly once, on the transition INTO "cancelled" from a
+      // non-cancelled state. Re-cancelling an already-cancelled invoice is a
+      // no-op for inventory.
+      const wasCancelled = current?.status === "cancelled";
+      const nowCancelled = updated?.status === "cancelled";
+      if (nowCancelled && !wasCancelled) {
+        await this.restoreStockForInvoice(tx, id);
+      }
+
+      return updated;
+    });
   }
 
   async deleteInvoice(id: string): Promise<void> {
     await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, id))
+        .limit(1);
+
+      // Only restore stock if it wasn't already released when the invoice was
+      // cancelled — otherwise deleting a cancelled invoice would double-count.
+      if (current && current.status !== "cancelled") {
+        await this.restoreStockForInvoice(tx, id);
+      }
+
       await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
       await tx.delete(invoices).where(eq(invoices.id, id));
     });
