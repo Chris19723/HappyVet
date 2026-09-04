@@ -164,7 +164,7 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
               <FormItem>
                 <FormLabel>Email</FormLabel>
                 <FormControl>
-                  <Input type="email" placeholder="correo@ejemplo.com" {...field} />
+                  <Input type="email" placeholder="correo@ejemplo.com" {...field} value={field.value ?? ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -178,7 +178,7 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
               <FormItem>
                 <FormLabel>Teléfono</FormLabel>
                 <FormControl>
-                  <Input placeholder="+34 600 000 000" {...field} />
+                  <Input placeholder="+34 600 000 000" {...field} value={field.value ?? ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -193,7 +193,7 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
             <FormItem>
               <FormLabel>Dirección</FormLabel>
               <FormControl>
-                <Input placeholder="Calle, número, piso..." {...field} />
+                <Input placeholder="Calle, número, piso..." {...field} value={field.value ?? ""} />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -208,7 +208,7 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
               <FormItem>
                 <FormLabel>Ciudad</FormLabel>
                 <FormControl>
-                  <Input placeholder="Ciudad" {...field} />
+                  <Input placeholder="Ciudad" {...field} value={field.value ?? ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -222,7 +222,7 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
               <FormItem>
                 <FormLabel>Código Postal</FormLabel>
                 <FormControl>
-                  <Input placeholder="28001" {...field} />
+                  <Input placeholder="28001" {...field} value={field.value ?? ""} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -237,9 +237,10 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
             <FormItem>
               <FormLabel>Notas</FormLabel>
               <FormControl>
-                <Textarea 
+                <Textarea
                   placeholder="Información adicional sobre el propietario..."
                   {...field}
+                  value={field.value ?? ""}
                 />
               </FormControl>
               <FormMessage />

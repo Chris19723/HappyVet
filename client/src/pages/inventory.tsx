@@ -87,12 +87,12 @@ export default function Inventory() {
     }
   }, [selectedItem, form]);
 
-  const { data: inventoryItems, isLoading: itemsLoading, error } = useQuery({
+  const { data: inventoryItems, isLoading: itemsLoading, error } = useQuery<InventoryItem[]>({
     queryKey: ["/api/inventory"],
     retry: false,
   });
 
-  const { data: lowStockItems } = useQuery({
+  const { data: lowStockItems } = useQuery<InventoryItem[]>({
     queryKey: ["/api/inventory/low-stock"],
     retry: false,
   });
@@ -229,9 +229,11 @@ export default function Inventory() {
   ) || [];
 
   const getStockStatus = (item: InventoryItem) => {
-    if (item.currentStock <= 0) {
+    const currentStock = item.currentStock ?? 0;
+    const minStock = item.minStock ?? 0;
+    if (currentStock <= 0) {
       return { label: "Sin Stock", color: "bg-red-100 text-red-800" };
-    } else if (item.currentStock <= item.minStock) {
+    } else if (currentStock <= minStock) {
       return { label: "Stock Bajo", color: "bg-yellow-100 text-yellow-800" };
     }
     return { label: "En Stock", color: "bg-green-100 text-green-800" };
@@ -280,7 +282,7 @@ export default function Inventory() {
                   <div>
                     <p className="text-sm font-medium text-slate-600">Sin Stock</p>
                     <p className="text-2xl font-bold text-slate-900">
-                      {inventoryItems?.filter((item: InventoryItem) => item.currentStock <= 0).length || 0}
+                      {inventoryItems?.filter((item: InventoryItem) => (item.currentStock ?? 0) <= 0).length || 0}
                     </p>
                   </div>
                 </div>
@@ -336,7 +338,7 @@ export default function Inventory() {
                           <FormItem>
                             <FormLabel>Categoría</FormLabel>
                             <FormControl>
-                              <Select onValueChange={field.onChange} value={field.value}>
+                              <Select onValueChange={field.onChange} value={field.value ?? undefined}>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Seleccionar categoría" />
                                 </SelectTrigger>
@@ -363,7 +365,7 @@ export default function Inventory() {
                         <FormItem>
                           <FormLabel>Descripción</FormLabel>
                           <FormControl>
-                            <Input {...field} />
+                            <Input {...field} value={field.value ?? ""} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -378,9 +380,10 @@ export default function Inventory() {
                           <FormItem>
                             <FormLabel>Stock Actual *</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 {...field}
+                                value={field.value ?? ""}
                                 onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
                               />
                             </FormControl>
@@ -388,7 +391,7 @@ export default function Inventory() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="minStock"
@@ -396,9 +399,10 @@ export default function Inventory() {
                           <FormItem>
                             <FormLabel>Stock Mínimo *</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 {...field}
+                                value={field.value ?? ""}
                                 onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
                               />
                             </FormControl>
@@ -416,10 +420,11 @@ export default function Inventory() {
                           <FormItem>
                             <FormLabel>Precio Unitario (MXN)</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 step="0.01"
                                 {...field}
+                                value={field.value ?? ""}
                               />
                             </FormControl>
                             <FormMessage />
@@ -434,7 +439,7 @@ export default function Inventory() {
                           <FormItem>
                             <FormLabel>Proveedor</FormLabel>
                             <FormControl>
-                              <Input {...field} />
+                              <Input {...field} value={field.value ?? ""} />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -546,7 +551,7 @@ export default function Inventory() {
                         
                         <div className="flex justify-between text-sm">
                           <span className="font-medium">Stock:</span>
-                          <span className={item.currentStock <= item.minStock ? "text-red-600 font-medium" : ""}>
+                          <span className={(item.currentStock ?? 0) <= (item.minStock ?? 0) ? "text-red-600 font-medium" : ""}>
                             {item.currentStock} / {item.minStock} mín.
                           </span>
                         </div>

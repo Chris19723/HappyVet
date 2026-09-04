@@ -30,7 +30,7 @@ export default function MedicalRecords() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: medicalRecords, isLoading: recordsLoading, error } = useQuery({
+  const { data: medicalRecords, isLoading: recordsLoading, error } = useQuery<MedicalRecordWithDetails[]>({
     queryKey: ["/api/medical-records"],
     retry: false,
   });
@@ -137,7 +137,7 @@ export default function MedicalRecords() {
                           <div className="flex items-center space-x-1">
                             <Calendar className="h-4 w-4" />
                             <span>
-                              {format(new Date(record.date), "PPP")}
+                              {record.date ? format(new Date(record.date), "PPP") : "—"}
                             </span>
                           </div>
                         </div>

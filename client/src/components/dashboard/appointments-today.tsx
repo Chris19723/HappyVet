@@ -94,8 +94,8 @@ export default function AppointmentsToday({ appointments, isLoading }: Appointme
                   <p className="text-sm font-medium text-slate-900">
                     {format(new Date(appointment.appointmentDate), "HH:mm")}
                   </p>
-                  <Badge className={getStatusColor(appointment.status)}>
-                    {getStatusLabel(appointment.status)}
+                  <Badge className={getStatusColor(appointment.status ?? "")}>
+                    {getStatusLabel(appointment.status ?? "")}
                   </Badge>
                 </div>
               </div>
