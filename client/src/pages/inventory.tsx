@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { trackEvent } from "@/lib/analytics";
 import Sidebar from "@/components/layout/sidebar";
 import Header from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
@@ -101,9 +102,13 @@ export default function Inventory() {
     mutationFn: async (data: InsertInventoryItem) => {
       await apiRequest("POST", "/api/inventory", data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
+      trackEvent("inventory_item_created", {
+        initial_stock: variables.currentStock ?? 0,
+        has_supplier: Boolean(variables.supplier?.trim()),
+      });
       toast({
         title: "Success",
         description: "Inventory item created successfully",
@@ -135,9 +140,13 @@ export default function Inventory() {
     mutationFn: async (data: InsertInventoryItem) => {
       await apiRequest("PUT", `/api/inventory/${selectedItem!.id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
+      trackEvent("inventory_item_updated", {
+        current_stock: variables.currentStock ?? 0,
+        has_supplier: Boolean(variables.supplier?.trim()),
+      });
       toast({
         title: "Success",
         description: "Inventory item updated successfully",
@@ -172,6 +181,7 @@ export default function Inventory() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
+      trackEvent("inventory_item_deleted");
       toast({
         title: "Success",
         description: "Inventory item deleted successfully",

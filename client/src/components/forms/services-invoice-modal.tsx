@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { isUnauthorizedError } from "@/lib/authUtils";
+import { trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -161,6 +162,11 @@ export default function ServicesInvoiceModal({
 
       const invoiceRes = await apiRequest("POST", "/api/invoices", invoicePayload);
       const invoice = await invoiceRes.json();
+      trackEvent("invoice_created", {
+        source: appointment ? "appointment" : "walk_in",
+        item_count: validItems.length,
+        inventory_item_count: validItems.filter((item) => Boolean(item.inventoryItemId)).length,
+      });
 
       // Only appointment invoicing marks the appointment completed.
       if (appointment && appointment.status !== "completed") {

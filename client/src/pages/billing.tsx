@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { trackEvent } from "@/lib/analytics";
 import Sidebar from "@/components/layout/sidebar";
 import Header from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
@@ -86,8 +87,9 @@ export default function Billing() {
         paymentDate: status === "paid" ? new Date().toISOString() : null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      trackEvent("invoice_status_updated", { status: variables.status });
       toast({ title: "Factura actualizada" });
     },
     onError: (error) => {
@@ -120,8 +122,12 @@ export default function Billing() {
       const res = await apiRequest("POST", "/api/treatments", data);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
+      trackEvent("service_created", {
+        category: variables.category ?? "uncategorized",
+        has_duration: Boolean(variables.duration),
+      });
       toast({ title: "Servicio creado correctamente." });
       closeTreatmentDialog();
     },
@@ -138,8 +144,12 @@ export default function Billing() {
     mutationFn: async ({ id, data }: { id: string; data: Partial<InsertTreatment> }) => {
       await apiRequest("PUT", `/api/treatments/${id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
+      trackEvent("service_updated", {
+        category: variables.data.category ?? "uncategorized",
+        has_duration: Boolean(variables.data.duration),
+      });
       toast({ title: "Servicio actualizado correctamente." });
       closeTreatmentDialog();
     },
@@ -156,8 +166,9 @@ export default function Billing() {
     mutationFn: async (id: string) => {
       await apiRequest("DELETE", `/api/treatments/${id}`);
     },
-    onSuccess: () => {
+    onSuccess: (_data, _variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
+      trackEvent("service_deactivated");
       toast({ title: "Servicio desactivado." });
     },
     onError: (error) => {

@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -114,11 +115,15 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
     mutationFn: async (data: InsertPatient) => {
       await apiRequest("PUT", `/api/patients/${patient!.id}`, data);
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
       if (patient && (patientPhotoChanged || ownerPhotoChanged)) {
         await savePhotos(patient.id, form.getValues("ownerId"));
       }
       queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
+      trackEvent("patient_updated", {
+        species: variables.species,
+        has_photo: Boolean(patientPhotoUrl || ownerPhotoUrl),
+      });
       toast({
         title: "Paciente actualizado",
         description: "Los datos y fotografías se guardaron correctamente.",
@@ -217,6 +222,10 @@ export default function PatientForm({ patient, onSuccess }: PatientFormProps) {
 
         queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
         queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+        trackEvent("patient_created", {
+          species: data.species,
+          has_photo: Boolean(patientPhotoUrl || ownerPhotoUrl),
+        });
         toast({
           title: "Success",
           description: "Patient created successfully",

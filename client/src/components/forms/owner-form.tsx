@@ -5,6 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -55,8 +56,12 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
     mutationFn: async (data: InsertOwner) => {
       await apiRequest("POST", "/api/owners", data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/owners"] });
+      trackEvent("owner_created", {
+        has_email: Boolean(variables.email?.trim()),
+        has_phone: Boolean(variables.phone?.trim()),
+      });
       toast({
         title: "Success",
         description: "Owner created successfully",
@@ -87,8 +92,12 @@ export default function OwnerForm({ owner, onSuccess }: OwnerFormProps) {
     mutationFn: async (data: InsertOwner) => {
       await apiRequest("PUT", `/api/owners/${owner!.id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/owners"] });
+      trackEvent("owner_updated", {
+        has_email: Boolean(variables.email?.trim()),
+        has_phone: Boolean(variables.phone?.trim()),
+      });
       toast({
         title: "Success",
         description: "Owner updated successfully",

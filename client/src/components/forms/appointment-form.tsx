@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -71,10 +72,15 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
     mutationFn: async (data: InsertAppointment) => {
       await apiRequest("POST", "/api/appointments", data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/today-appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      trackEvent("appointment_created", {
+        status: variables.status ?? "scheduled",
+        duration_minutes: variables.duration ?? 0,
+        has_notes: Boolean(variables.notes?.trim()),
+      });
       toast({
         title: "Success",
         description: "Appointment created successfully",
@@ -105,9 +111,14 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
     mutationFn: async (data: InsertAppointment) => {
       await apiRequest("PUT", `/api/appointments/${appointment!.id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/today-appointments"] });
+      trackEvent("appointment_updated", {
+        status: variables.status ?? "scheduled",
+        duration_minutes: variables.duration ?? 0,
+        has_notes: Boolean(variables.notes?.trim()),
+      });
       toast({
         title: "Success",
         description: "Appointment updated successfully",
