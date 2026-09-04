@@ -63,6 +63,7 @@ export interface IStorage {
   // Owner operations
   getOwners(): Promise<Owner[]>;
   getOwner(id: string): Promise<Owner | undefined>;
+  getOrCreatePublicOwner(): Promise<Owner>;
   createOwner(owner: InsertOwner): Promise<Owner>;
   updateOwner(id: string, owner: Partial<InsertOwner>): Promise<Owner>;
   deleteOwner(id: string): Promise<void>;
@@ -168,6 +169,22 @@ export class DatabaseStorage implements IStorage {
 
   async createOwner(owner: InsertOwner): Promise<Owner> {
     const [created] = await db.insert(owners).values(owner).returning();
+    return created;
+  }
+
+  // The generic walk-in customer for counter sales without a registered owner.
+  // Created on first use so no seed/migration is needed.
+  async getOrCreatePublicOwner(): Promise<Owner> {
+    const [existing] = await db
+      .select()
+      .from(owners)
+      .where(and(eq(owners.firstName, "Público"), eq(owners.lastName, "General")))
+      .limit(1);
+    if (existing) return existing;
+    const [created] = await db
+      .insert(owners)
+      .values({ firstName: "Público", lastName: "General", notes: "Cliente genérico para ventas de mostrador" })
+      .returning();
     return created;
   }
 

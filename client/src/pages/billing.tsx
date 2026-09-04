@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign, Package, Tag } from "lucide-react";
 import type { InvoiceWithDetails, Treatment, InsertTreatment } from "@shared/schema";
 import { format } from "date-fns";
+import ServicesInvoiceModal from "@/components/forms/services-invoice-modal";
 
 const CATEGORIES = [
   "Consulta",
@@ -50,6 +51,7 @@ export default function Billing() {
     return params.get("q") ?? "";
   });
   const [treatmentSearch, setTreatmentSearch] = useState("");
+  const [saleOpen, setSaleOpen] = useState(false);
 
   const [treatmentDialogOpen, setTreatmentDialogOpen] = useState(false);
   const [editingTreatment, setEditingTreatment] = useState<Treatment | null>(null);
@@ -281,7 +283,7 @@ export default function Billing() {
 
             {/* ── FACTURAS TAB ── */}
             <TabsContent value="facturas">
-              {/* Search */}
+              {/* Search + new sale */}
               <div className="flex flex-col sm:flex-row gap-4 mb-6">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -292,7 +294,20 @@ export default function Billing() {
                     className="pl-10"
                   />
                 </div>
+                <Button className="whitespace-nowrap" onClick={() => setSaleOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Nueva Venta
+                </Button>
               </div>
+
+              <ServicesInvoiceModal
+                open={saleOpen}
+                onClose={() => setSaleOpen(false)}
+                onSuccess={(invoiceNumber) => {
+                  setSaleOpen(false);
+                  toast({ title: "Venta registrada", description: `Factura ${invoiceNumber} generada.` });
+                }}
+              />
 
               {/* Summary cards */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">

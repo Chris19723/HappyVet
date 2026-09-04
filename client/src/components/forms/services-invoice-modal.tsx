@@ -1,25 +1,27 @@
-import { useRef, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Plus, Trash2, Receipt } from "lucide-react";
-import type { AppointmentWithDetails, Treatment } from "@shared/schema";
+import type { AppointmentWithDetails, Treatment, InventoryItem, Owner } from "@shared/schema";
 
 interface LineItem {
   _id: string;
   treatmentId: string;
+  inventoryItemId: string;
   description: string;
   quantity: number;
   unitPrice: string;
 }
 
 interface ServicesInvoiceModalProps {
-  appointment: AppointmentWithDetails;
+  // When present: bill an appointment. When absent: counter sale (walk-in).
+  appointment?: AppointmentWithDetails | null;
   open: boolean;
   onClose: () => void;
   onSuccess: (invoiceNumber: string) => void;
@@ -29,15 +31,17 @@ let _seq = 0;
 function newId() { return `li-${++_seq}`; }
 
 function emptyItem(): LineItem {
-  return { _id: newId(), treatmentId: "", description: "", quantity: 1, unitPrice: "" };
+  return { _id: newId(), treatmentId: "", inventoryItemId: "", description: "", quantity: 1, unitPrice: "" };
 }
 
 export default function ServicesInvoiceModal({
   appointment, open, onClose, onSuccess,
 }: ServicesInvoiceModalProps) {
   const { toast } = useToast();
+  const isSale = !appointment;
   const [items, setItems] = useState<LineItem[]>([emptyItem()]);
   const [generating, setGenerating] = useState(false);
+  const [saleOwnerId, setSaleOwnerId] = useState<string>("");
   const generationInProgress = useRef(false);
 
   const { data: treatments } = useQuery<Treatment[]>({
@@ -45,22 +49,72 @@ export default function ServicesInvoiceModal({
     retry: false,
   });
 
+  // Counter-sale extras: customer list + the generic "Público General" customer.
+  const { data: owners } = useQuery<Owner[]>({
+    queryKey: ["/api/owners"],
+    retry: false,
+    enabled: isSale,
+  });
+  const { data: publicOwner } = useQuery<Owner>({
+    queryKey: ["/api/public-owner"],
+    retry: false,
+    enabled: isSale,
+  });
+
+  // Default the walk-in customer to "Público General" once it loads.
+  useEffect(() => {
+    if (isSale && publicOwner && !saleOwnerId) {
+      setSaleOwnerId(publicOwner.id);
+    }
+  }, [isSale, publicOwner, saleOwnerId]);
+
+  const ownerId = appointment ? appointment.patient.ownerId : saleOwnerId;
+  const patientId = appointment ? appointment.patientId : null;
+  const appointmentId = appointment ? appointment.id : null;
+
+  const { data: inventory } = useQuery<InventoryItem[]>({
+    queryKey: ["/api/inventory"],
+    retry: false,
+  });
+
   const updateItem = (id: string, patch: Partial<LineItem>) => {
     setItems((prev) => prev.map((it) => it._id === id ? { ...it, ...patch } : it));
   };
 
-  const handleTreatmentSelect = (itemId: string, treatmentId: string) => {
-    if (treatmentId === "__manual__") {
-      updateItem(itemId, { treatmentId: "", description: "", unitPrice: "" });
+  // Selector value is prefixed: "t:<id>" service, "p:<id>" product, "__manual__".
+  const selectValue = (item: LineItem) =>
+    item.inventoryItemId ? `p:${item.inventoryItemId}`
+      : item.treatmentId ? `t:${item.treatmentId}`
+      : "__manual__";
+
+  const handleCatalogSelect = (itemId: string, value: string) => {
+    if (value === "__manual__") {
+      updateItem(itemId, { treatmentId: "", inventoryItemId: "", description: "", unitPrice: "" });
       return;
     }
-    const treatment = treatments?.find((t) => t.id === treatmentId);
-    if (treatment) {
-      updateItem(itemId, {
-        treatmentId: treatment.id,
-        description: treatment.name,
-        unitPrice: String(treatment.price),
-      });
+    if (value.startsWith("t:")) {
+      const treatment = treatments?.find((t) => t.id === value.slice(2));
+      if (treatment) {
+        updateItem(itemId, {
+          treatmentId: treatment.id,
+          inventoryItemId: "",
+          description: treatment.name,
+          unitPrice: String(treatment.price),
+        });
+      }
+      return;
+    }
+    if (value.startsWith("p:")) {
+      const product = inventory?.find((p) => p.id === value.slice(2));
+      if (product) {
+        updateItem(itemId, {
+          inventoryItemId: product.id,
+          treatmentId: "",
+          description: product.name,
+          // Catalog price. The server is the source of truth and re-applies it.
+          unitPrice: String(product.unitPrice ?? "0"),
+        });
+      }
     }
   };
 
@@ -91,26 +145,30 @@ export default function ServicesInvoiceModal({
       // Server computes subtotal/tax/total from these items and creates the
       // invoice + items atomically. Client no longer sends any amounts.
       const invoicePayload = {
-        ownerId: appointment.patient.ownerId,
-        patientId: appointment.patientId,
-        appointmentId: appointment.id,
+        ownerId,
+        patientId,
+        appointmentId,
         taxRate: 0,
         items: validItems.map((item) => ({
           description: item.description,
           quantity: item.quantity,
           unitPrice: parseFloat(item.unitPrice),
           treatmentId: item.treatmentId || null,
+          inventoryItemId: item.inventoryItemId || null,
         })),
       };
 
       const invoiceRes = await apiRequest("POST", "/api/invoices", invoicePayload);
       const invoice = await invoiceRes.json();
 
-      if (appointment.status !== "completed") {
+      // Only appointment invoicing marks the appointment completed.
+      if (appointment && appointment.status !== "completed") {
         await apiRequest("PUT", `/api/appointments/${appointment.id}`, { status: "completed" });
       }
 
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/today-appointments"] });
@@ -119,7 +177,12 @@ export default function ServicesInvoiceModal({
       setItems([emptyItem()]);
     } catch (err) {
       console.error("Error generating invoice:", err);
-      toast({ title: "Error", description: "No se pudo generar la factura.", variant: "destructive" });
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("INSUFFICIENT_STOCK")) {
+        toast({ title: "Sin stock suficiente", description: "Uno de los productos no tiene stock suficiente. Ajusta la cantidad o repón inventario.", variant: "destructive" });
+      } else {
+        toast({ title: "Error", description: "No se pudo generar la factura.", variant: "destructive" });
+      }
     } finally {
       generationInProgress.current = false;
       setGenerating(false);
@@ -137,22 +200,43 @@ export default function ServicesInvoiceModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Receipt className="h-5 w-5" />
-            Agregar Servicios — {appointment.patient.name}
+            {isSale ? "Nueva Venta" : `Agregar Servicios y Productos — ${appointment!.patient.name}`}
           </DialogTitle>
         </DialogHeader>
 
-        <div className="text-sm text-slate-500 mb-4">
-          Propietario: <span className="font-medium text-slate-700">
-            {appointment.patient.owner.firstName} {appointment.patient.owner.lastName}
-          </span>
-        </div>
+        {isSale ? (
+          <div className="mb-4">
+            <label className="text-xs font-medium text-slate-500">Cliente</label>
+            <Select value={saleOwnerId} onValueChange={setSaleOwnerId}>
+              <SelectTrigger className="h-9 text-sm bg-white mt-1">
+                <SelectValue placeholder="Seleccionar cliente..." />
+              </SelectTrigger>
+              <SelectContent>
+                {publicOwner && (
+                  <SelectItem value={publicOwner.id}>Público General (mostrador)</SelectItem>
+                )}
+                {owners?.filter((o) => o.id !== publicOwner?.id).map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {o.firstName} {o.lastName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : (
+          <div className="text-sm text-slate-500 mb-4">
+            Propietario: <span className="font-medium text-slate-700">
+              {appointment!.patient.owner.firstName} {appointment!.patient.owner.lastName}
+            </span>
+          </div>
+        )}
 
         {/* Line items */}
         <div className="space-y-3">
           {items.map((item, index) => (
             <div key={item._id} className="border rounded-lg p-3 space-y-2 bg-slate-50">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-slate-500">Servicio {index + 1}</span>
+                <span className="text-xs font-medium text-slate-500">Concepto {index + 1}</span>
                 {items.length > 1 && (
                   <Button
                     type="button"
@@ -168,20 +252,38 @@ export default function ServicesInvoiceModal({
 
               {/* Catalog selector */}
               <Select
-                value={item.treatmentId || "__manual__"}
-                onValueChange={(v) => handleTreatmentSelect(item._id, v)}
+                value={selectValue(item)}
+                onValueChange={(v) => handleCatalogSelect(item._id, v)}
               >
                 <SelectTrigger className="h-8 text-sm bg-white">
                   <SelectValue placeholder="Seleccionar del catálogo o manual..." />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__manual__">— Ingreso manual —</SelectItem>
-                  {treatments?.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name} — ${Number(t.price).toFixed(2)} MXN
-                      {t.category ? ` (${t.category})` : ""}
-                    </SelectItem>
-                  ))}
+                  {treatments && treatments.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Servicios</SelectLabel>
+                      {treatments.map((t) => (
+                        <SelectItem key={t.id} value={`t:${t.id}`}>
+                          {t.name} — ${Number(t.price).toFixed(2)} MXN
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {inventory && inventory.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Productos</SelectLabel>
+                      {inventory.map((p) => (
+                        <SelectItem
+                          key={p.id}
+                          value={`p:${p.id}`}
+                          disabled={(p.currentStock ?? 0) <= 0}
+                        >
+                          {p.name} — ${Number(p.unitPrice ?? 0).toFixed(2)} MXN · stock: {p.currentStock ?? 0}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
 
@@ -208,6 +310,8 @@ export default function ServicesInvoiceModal({
                   min={0}
                   step="0.01"
                   value={item.unitPrice}
+                  disabled={!!item.inventoryItemId}
+                  title={item.inventoryItemId ? "Precio tomado del catálogo de inventario" : undefined}
                   onChange={(e) => updateItem(item._id, { unitPrice: e.target.value })}
                 />
                 <div className="col-span-1 h-8 flex items-center justify-end text-sm font-medium text-slate-700">
@@ -220,7 +324,7 @@ export default function ServicesInvoiceModal({
 
         <Button type="button" variant="outline" size="sm" onClick={addItem} className="w-full mt-2">
           <Plus className="h-4 w-4 mr-1" />
-          Agregar servicio
+          Agregar concepto
         </Button>
 
         <Separator className="my-4" />
@@ -239,11 +343,11 @@ export default function ServicesInvoiceModal({
           <Button
             type="button"
             onClick={handleGenerate}
-            disabled={generating || subtotal <= 0}
+            disabled={generating || subtotal <= 0 || (isSale && !ownerId)}
             className="gap-2"
           >
             <Receipt className="h-4 w-4" />
-            {generating ? "Generando..." : "Generar Factura"}
+            {generating ? "Generando..." : isSale ? "Cobrar" : "Generar Factura"}
           </Button>
         </div>
       </DialogContent>

@@ -124,6 +124,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Walk-in ("Público General") customer for counter sales. Get-or-create.
+  app.get("/api/public-owner", isAuthenticated, async (_req, res) => {
+    try {
+      const owner = await storage.getOrCreatePublicOwner();
+      res.json(owner);
+    } catch (error) {
+      console.error("Error fetching public owner:", error);
+      res.status(500).json({ message: "Failed to fetch public owner" });
+    }
+  });
+
   app.get("/api/owners/:id", isAuthenticated, async (req, res) => {
     try {
       const owner = await storage.getOwner(req.params.id);
