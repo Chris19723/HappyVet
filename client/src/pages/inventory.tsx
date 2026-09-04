@@ -93,10 +93,26 @@ export default function Inventory() {
     retry: false,
   });
 
-  const { data: lowStockItems } = useQuery<InventoryItem[]>({
+  const { data: lowStockItems, error: lowStockError } = useQuery<InventoryItem[]>({
     queryKey: ["/api/inventory/low-stock"],
     retry: false,
   });
+
+  useEffect(() => {
+    const requestError = error ?? lowStockError;
+    if (!requestError || !isUnauthorizedError(requestError)) return;
+
+    toast({
+      title: "Sesión expirada",
+      description: "Inicia sesión nuevamente para cargar el inventario.",
+      variant: "destructive",
+    });
+    const redirectTimer = setTimeout(() => {
+      window.location.href = "/api/login";
+    }, 500);
+
+    return () => clearTimeout(redirectTimer);
+  }, [error, lowStockError, toast]);
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertInventoryItem) => {
