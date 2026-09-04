@@ -61,6 +61,49 @@ export interface CreateInvoiceInput {
   }[];
 }
 
+async function reserveNextInvoiceNumber(tx: any): Promise<string> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('invoice_number_seq_init'))`);
+  await tx.execute(sql`create sequence if not exists invoice_number_seq start with 1`);
+
+  const maxInvoiceResult: any = await tx.execute(sql`
+    select coalesce(
+      max(substring(invoice_number from 5)::bigint),
+      0
+    ) as max_number
+    from invoices
+    where invoice_number ~ '^INV-[0-9]{6}$'
+  `);
+  const sequenceState: any = await tx.execute(
+    sql`select last_value, is_called from invoice_number_seq`
+  );
+
+  const maxExisting = Number(maxInvoiceResult?.rows?.[0]?.max_number ?? 0);
+  const lastValue = Number(sequenceState?.rows?.[0]?.last_value ?? 1);
+  const isCalled = Boolean(sequenceState?.rows?.[0]?.is_called);
+
+  // A newly-created sequence starts at 1 with is_called=false. If invoices
+  // already predate the sequence, move it to the highest stored folio so the
+  // next nextval() cannot collide with an existing invoice number.
+  if (
+    maxExisting > lastValue ||
+    (!isCalled && maxExisting >= lastValue)
+  ) {
+    await tx.execute(
+      sql`select setval('invoice_number_seq', ${maxExisting}, true)`
+    );
+  }
+
+  const sequenceResult: any = await tx.execute(
+    sql`select nextval('invoice_number_seq') as nextval`
+  );
+  const nextValue = sequenceResult?.rows?.[0]?.nextval;
+  if (nextValue === undefined || nextValue === null) {
+    throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
+  }
+
+  return `INV-${String(nextValue).padStart(6, "0")}`;
+}
+
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
   getUser(id: string): Promise<User | undefined>;
@@ -583,12 +626,7 @@ export class DatabaseStorage implements IStorage {
   // Sequential, collision-free invoice numbers backed by a Postgres sequence
   // (replaces `INV-${Date.now()}`, which can collide and isn't ordered).
   async getNextInvoiceNumber(): Promise<string> {
-    await db.execute(sql`CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START WITH 1`);
-    const result: any = await db.execute(
-      sql`SELECT nextval('invoice_number_seq') AS nextval`
-    );
-    const next = result?.rows?.[0]?.nextval ?? Date.now();
-    return `INV-${String(next).padStart(6, "0")}`;
+    return db.transaction(async (tx) => reserveNextInvoiceNumber(tx));
   }
 
   // Creates an invoice + its items atomically, computing all totals server-side
@@ -667,16 +705,7 @@ export class DatabaseStorage implements IStorage {
         input.taxRate ?? 0
       );
 
-      // Sequence lives in its own advisory lock so the first CREATE SEQUENCE
-      // can't race across concurrent transactions.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('invoice_number_seq_init'))`);
-      await tx.execute(sql`CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START WITH 1`);
-      const seq: any = await tx.execute(sql`SELECT nextval('invoice_number_seq') AS nextval`);
-      const nextValue = seq?.rows?.[0]?.nextval;
-      if (nextValue === undefined || nextValue === null) {
-        throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
-      }
-      const invoiceNumber = `INV-${String(nextValue).padStart(6, "0")}`;
+      const invoiceNumber = await reserveNextInvoiceNumber(tx);
 
       const [created] = await tx
         .insert(invoices)
