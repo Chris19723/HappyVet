@@ -18,6 +18,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign, Package, Tag } from "lucide-react";
 import type { InvoiceWithDetails, Treatment, InsertTreatment } from "@shared/schema";
+import {
+  getDayRangeInTimeZone,
+  getWeekRangeInTimeZone,
+  getMonthRangeInTimeZone,
+  getRangeFromDayStringsInTimeZone,
+} from "@shared/time";
+
+// Clinic timezone, so billing periods line up with the dashboard.
+const CLINIC_TIMEZONE = "America/Mexico_City";
+
+type BillingPeriod = "all" | "day" | "week" | "month" | "custom";
+const BILLING_PERIODS: { key: BillingPeriod; label: string }[] = [
+  { key: "all", label: "Todas" },
+  { key: "day", label: "Día" },
+  { key: "week", label: "Semana" },
+  { key: "month", label: "Mes" },
+  { key: "custom", label: "Rango" },
+];
 import { format } from "date-fns";
 import ServicesInvoiceModal from "@/components/forms/services-invoice-modal";
 
@@ -53,6 +71,9 @@ export default function Billing() {
   });
   const [treatmentSearch, setTreatmentSearch] = useState("");
   const [saleOpen, setSaleOpen] = useState(false);
+  const [period, setPeriod] = useState<BillingPeriod>("all");
+  const [periodFrom, setPeriodFrom] = useState("");
+  const [periodTo, setPeriodTo] = useState("");
 
   const [treatmentDialogOpen, setTreatmentDialogOpen] = useState(false);
   const [editingTreatment, setEditingTreatment] = useState<Treatment | null>(null);
@@ -190,12 +211,35 @@ export default function Billing() {
 
   if (!isAuthenticated) return null;
 
-  const filteredInvoices = (invoices as InvoiceWithDetails[] | undefined)?.filter((invoice) =>
+  const allInvoices = (invoices as InvoiceWithDetails[] | undefined) ?? [];
+
+  // Resolve the selected period to a [start, end) range in the clinic timezone.
+  // "all" (and an incomplete custom range) means no date filtering.
+  const periodRange = (() => {
+    const now = new Date();
+    if (period === "day") return getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
+    if (period === "week") return getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
+    if (period === "month") return getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
+    if (period === "custom" && periodFrom && periodTo) {
+      return getRangeFromDayStringsInTimeZone(periodFrom, periodTo, CLINIC_TIMEZONE);
+    }
+    return null;
+  })();
+
+  const invoicesInPeriod = periodRange
+    ? allInvoices.filter((inv) => {
+        if (!inv.issueDate) return false;
+        const d = new Date(inv.issueDate);
+        return d >= periodRange.start && d < periodRange.end;
+      })
+    : allInvoices;
+
+  const filteredInvoices = invoicesInPeriod.filter((invoice) =>
     invoice.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
     invoice.owner.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
     invoice.owner.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (invoice.patient?.name ?? "").toLowerCase().includes(searchTerm.toLowerCase())
-  ) || [];
+  );
 
   const filteredTreatments = treatments?.filter((t) =>
     t.name.toLowerCase().includes(treatmentSearch.toLowerCase()) ||
@@ -320,6 +364,56 @@ export default function Billing() {
                 }}
               />
 
+              {/* Period filter (scopes the summary cards and the invoice list) */}
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+                  {BILLING_PERIODS.map((p) => (
+                    <button
+                      key={p.key}
+                      type="button"
+                      onClick={() => setPeriod(p.key)}
+                      aria-pressed={period === p.key}
+                      data-testid={`billing-period-${p.key}`}
+                      className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                        period === p.key
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-700"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                {period === "custom" && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="date"
+                      value={periodFrom}
+                      max={periodTo || undefined}
+                      onChange={(e) => setPeriodFrom(e.target.value)}
+                      className="h-9 w-auto text-sm"
+                      data-testid="billing-from"
+                    />
+                    <span className="text-slate-400 text-sm">a</span>
+                    <Input
+                      type="date"
+                      value={periodTo}
+                      min={periodFrom || undefined}
+                      onChange={(e) => setPeriodTo(e.target.value)}
+                      className="h-9 w-auto text-sm"
+                      data-testid="billing-to"
+                    />
+                  </div>
+                )}
+                {period !== "all" && (
+                  <span className="text-sm text-slate-500">
+                    {period === "custom" && !periodRange
+                      ? "Elige un rango de fechas"
+                      : `${invoicesInPeriod.length} factura${invoicesInPeriod.length === 1 ? "" : "s"} en el periodo`}
+                  </span>
+                )}
+              </div>
+
               {/* Summary cards */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                 <Card>
@@ -327,7 +421,7 @@ export default function Billing() {
                     <Receipt className="h-8 w-8 text-blue-600" />
                     <div>
                       <p className="text-sm font-medium text-slate-600">Total Facturas</p>
-                      <p className="text-2xl font-bold text-slate-900">{(invoices as InvoiceWithDetails[])?.length || 0}</p>
+                      <p className="text-2xl font-bold text-slate-900">{invoicesInPeriod.length}</p>
                     </div>
                   </CardContent>
                 </Card>
@@ -337,9 +431,9 @@ export default function Billing() {
                     <div>
                       <p className="text-sm font-medium text-slate-600">Ingresos Cobrados</p>
                       <p className="text-2xl font-bold text-slate-900">
-                        ${(invoices as InvoiceWithDetails[])?.reduce((sum, inv) =>
+                        ${invoicesInPeriod.reduce((sum, inv) =>
                           inv.status === "paid" ? sum + Number(inv.totalAmount) : sum, 0
-                        ).toFixed(2) || "0.00"} MXN
+                        ).toFixed(2)} MXN
                       </p>
                     </div>
                   </CardContent>
@@ -350,7 +444,7 @@ export default function Billing() {
                     <div>
                       <p className="text-sm font-medium text-slate-600">Pendientes</p>
                       <p className="text-2xl font-bold text-slate-900">
-                        {(invoices as InvoiceWithDetails[])?.filter((inv) => inv.status === "pending").length || 0}
+                        {invoicesInPeriod.filter((inv) => inv.status === "pending").length}
                       </p>
                     </div>
                   </CardContent>
@@ -361,7 +455,7 @@ export default function Billing() {
                     <div>
                       <p className="text-sm font-medium text-slate-600">Vencidas</p>
                       <p className="text-2xl font-bold text-slate-900">
-                        {(invoices as InvoiceWithDetails[])?.filter((inv) => inv.status === "overdue").length || 0}
+                        {invoicesInPeriod.filter((inv) => inv.status === "overdue").length}
                       </p>
                     </div>
                   </CardContent>
