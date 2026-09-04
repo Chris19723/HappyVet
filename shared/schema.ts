@@ -140,6 +140,7 @@ export const invoiceItems = pgTable("invoice_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   invoiceId: varchar("invoice_id").references(() => invoices.id).notNull(),
   treatmentId: varchar("treatment_id").references(() => treatments.id),
+  inventoryItemId: varchar("inventory_item_id").references(() => inventoryItems.id),
   description: text("description").notNull(),
   quantity: integer("quantity").default(1),
   unitPrice: decimal("unit_price", { precision: 8, scale: 2 }).notNull(),
@@ -231,6 +232,10 @@ export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
   treatment: one(treatments, {
     fields: [invoiceItems.treatmentId],
     references: [treatments.id],
+  }),
+  inventoryItem: one(inventoryItems, {
+    fields: [invoiceItems.inventoryItemId],
+    references: [inventoryItems.id],
   }),
 }));
 

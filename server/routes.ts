@@ -59,6 +59,7 @@ const createInvoiceRequestSchema = z.object({
         quantity: z.number().int().positive(),
         unitPrice: z.number().nonnegative(),
         treatmentId: z.string().min(1).optional().nullable(),
+        inventoryItemId: z.string().min(1).optional().nullable(),
       })
     )
     .min(1)
@@ -120,6 +121,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching owners:", error);
       res.status(500).json({ message: "Failed to fetch owners" });
+    }
+  });
+
+  // Walk-in ("Público General") customer for counter sales. Get-or-create.
+  app.get("/api/public-owner", isAuthenticated, async (_req, res) => {
+    try {
+      const owner = await storage.getOrCreatePublicOwner();
+      res.json(owner);
+    } catch (error) {
+      console.error("Error fetching public owner:", error);
+      res.status(500).json({ message: "Failed to fetch public owner" });
     }
   });
 
@@ -447,6 +459,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       if (error instanceof Error && error.message === "APPOINTMENT_ALREADY_INVOICED") {
         return res.status(409).json({ message: "This appointment already has an invoice" });
+      }
+      if (error instanceof Error && error.message.startsWith("INSUFFICIENT_STOCK:")) {
+        const inventoryItemId = error.message.split(":")[1];
+        return res.status(409).json({
+          message: "No hay stock suficiente para uno de los productos.",
+          code: "INSUFFICIENT_STOCK",
+          inventoryItemId,
+        });
+      }
+      if (error instanceof Error && error.message.startsWith("INVENTORY_ITEM_NOT_FOUND:")) {
+        return res.status(400).json({ message: "Producto de inventario no encontrado." });
       }
       console.error("Error creating invoice:", error);
       res.status(500).json({ message: "Failed to create invoice" });

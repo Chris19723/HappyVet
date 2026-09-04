@@ -32,7 +32,7 @@ import {
   type InsertInventoryItem,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, lt, sql, asc } from "drizzle-orm";
+import { eq, desc, and, lt, sql, asc, gte } from "drizzle-orm";
 import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
 
 // Input for server-side invoice creation. Totals are NEVER taken from the
@@ -49,6 +49,9 @@ export interface CreateInvoiceInput {
     quantity: number;
     unitPrice: number;
     treatmentId?: string | null;
+    // When set, the line is an inventory product: its price comes from the
+    // catalog (server-side) and stock is decremented on sale.
+    inventoryItemId?: string | null;
   }[];
 }
 
@@ -60,6 +63,7 @@ export interface IStorage {
   // Owner operations
   getOwners(): Promise<Owner[]>;
   getOwner(id: string): Promise<Owner | undefined>;
+  getOrCreatePublicOwner(): Promise<Owner>;
   createOwner(owner: InsertOwner): Promise<Owner>;
   updateOwner(id: string, owner: Partial<InsertOwner>): Promise<Owner>;
   deleteOwner(id: string): Promise<void>;
@@ -165,6 +169,22 @@ export class DatabaseStorage implements IStorage {
 
   async createOwner(owner: InsertOwner): Promise<Owner> {
     const [created] = await db.insert(owners).values(owner).returning();
+    return created;
+  }
+
+  // The generic walk-in customer for counter sales without a registered owner.
+  // Created on first use so no seed/migration is needed.
+  async getOrCreatePublicOwner(): Promise<Owner> {
+    const [existing] = await db
+      .select()
+      .from(owners)
+      .where(and(eq(owners.firstName, "Público"), eq(owners.lastName, "General")))
+      .limit(1);
+    if (existing) return existing;
+    const [created] = await db
+      .insert(owners)
+      .values({ firstName: "Público", lastName: "General", notes: "Cliente genérico para ventas de mostrador" })
+      .returning();
     return created;
   }
 
@@ -571,11 +591,6 @@ export class DatabaseStorage implements IStorage {
   // so the client can never dictate the amount charged. Keeps the per-appointment
   // advisory lock that prevents double-billing the same appointment.
   async createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails> {
-    const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(
-      input.items,
-      input.taxRate ?? 0
-    );
-
     const invoiceId = await db.transaction(async (tx) => {
       if (input.appointmentId) {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.appointmentId}))`);
@@ -588,6 +603,65 @@ export class DatabaseStorage implements IStorage {
           throw new Error("APPOINTMENT_ALREADY_INVOICED");
         }
       }
+
+      // Resolve line prices: for inventory products, the price is the CATALOG
+      // price (source of truth), never what the client sent. Services/manual
+      // lines keep their given price. Also aggregate product quantities so a
+      // product appearing in several lines is decremented once.
+      const productQty = new Map<string, number>();
+      const resolvedItems = [] as {
+        description: string;
+        quantity: number;
+        unitPrice: number;
+        treatmentId?: string | null;
+        inventoryItemId?: string | null;
+      }[];
+
+      for (const it of input.items) {
+        let unitPrice = it.unitPrice;
+        if (it.inventoryItemId) {
+          const [product] = await tx
+            .select({ price: inventoryItems.unitPrice })
+            .from(inventoryItems)
+            .where(eq(inventoryItems.id, it.inventoryItemId))
+            .limit(1);
+          if (!product) {
+            throw new Error(`INVENTORY_ITEM_NOT_FOUND:${it.inventoryItemId}`);
+          }
+          unitPrice = Number(product.price ?? 0);
+          productQty.set(
+            it.inventoryItemId,
+            (productQty.get(it.inventoryItemId) ?? 0) + it.quantity
+          );
+        }
+        resolvedItems.push({ ...it, unitPrice });
+      }
+
+      // Decrement stock atomically. The conditional UPDATE (only when enough
+      // stock remains) blocks overselling even under concurrent sales.
+      for (const [inventoryItemId, qty] of Array.from(productQty.entries())) {
+        const [updated] = await tx
+          .update(inventoryItems)
+          .set({
+            currentStock: sql`coalesce(${inventoryItems.currentStock}, 0) - ${qty}`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(inventoryItems.id, inventoryItemId),
+              gte(sql`coalesce(${inventoryItems.currentStock}, 0)`, qty)
+            )
+          )
+          .returning({ id: inventoryItems.id });
+        if (!updated) {
+          throw new Error(`INSUFFICIENT_STOCK:${inventoryItemId}`);
+        }
+      }
+
+      const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(
+        resolvedItems,
+        input.taxRate ?? 0
+      );
 
       // Sequence lives in its own advisory lock so the first CREATE SEQUENCE
       // can't race across concurrent transactions.
@@ -617,9 +691,10 @@ export class DatabaseStorage implements IStorage {
         .returning({ id: invoices.id });
 
       await tx.insert(invoiceItems).values(
-        input.items.map((it) => ({
+        resolvedItems.map((it) => ({
           invoiceId: created.id,
           treatmentId: it.treatmentId ?? null,
+          inventoryItemId: it.inventoryItemId ?? null,
           description: it.description,
           quantity: it.quantity,
           unitPrice: it.unitPrice.toFixed(2),
