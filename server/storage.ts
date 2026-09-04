@@ -34,6 +34,12 @@ import {
 import { db } from "./db";
 import { eq, desc, and, lt, sql, asc, gte } from "drizzle-orm";
 import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
+import { getDayRangeInTimeZone, getMonthRangeInTimeZone } from "@shared/time";
+
+// The clinic's timezone anchors "today" / "this month" on the dashboard. The
+// server runs in UTC in the cloud, so without this a late-evening appointment
+// would roll into the next day. Configurable via CLINIC_TIMEZONE.
+const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
 
 // Input for server-side invoice creation. Totals are NEVER taken from the
 // client — they are computed here from the validated line items.
@@ -308,9 +314,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTodayAppointments(): Promise<AppointmentWithDetails[]> {
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const { start: startOfDay, end: endOfDay } = getDayRangeInTimeZone(new Date(), CLINIC_TIMEZONE);
 
     return await db
       .select()
@@ -781,11 +785,9 @@ export class DatabaseStorage implements IStorage {
     monthlyRevenue: number;
     lowStock: number;
   }> {
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const now = new Date();
+    const { start: startOfDay, end: endOfDay } = getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
+    const { start: startOfMonth, end: endOfMonth } = getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
 
     const [todayAppointmentsResult] = await db
       .select({ count: sql<number>`count(*)` })
