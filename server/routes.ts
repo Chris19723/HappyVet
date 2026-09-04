@@ -42,6 +42,29 @@ function normalizeDateTimeFields<T extends Record<string, any>>(data: T, fields:
   return normalized as T;
 }
 
+// Invoice creation: totals are computed server-side from these line items,
+// never taken from the client (financial integrity). `.strict()` rejects any
+// client-sent amount fields (subtotal/taxAmount/totalAmount).
+const createInvoiceRequestSchema = z.object({
+  ownerId: z.string().min(1),
+  patientId: z.string().min(1).optional().nullable(),
+  appointmentId: z.string().min(1).optional().nullable(),
+  dueDate: z.coerce.date().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(1).optional(),
+  items: z
+    .array(
+      z.object({
+        description: z.string().min(1),
+        quantity: z.number().int().positive(),
+        unitPrice: z.number().nonnegative(),
+        treatmentId: z.string().min(1).optional().nullable(),
+      })
+    )
+    .min(1)
+    .max(100),
+}).strict();
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
   await setupAuth(app);
@@ -406,10 +429,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/invoices", isAuthenticated, async (req, res) => {
     try {
-      const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
-      const validatedData = insertInvoiceSchema.parse(payload);
-      if (validatedData.appointmentId) {
-        const existingInvoice = await storage.getInvoiceByAppointment(validatedData.appointmentId);
+      const data = createInvoiceRequestSchema.parse(req.body);
+      if (data.appointmentId) {
+        const existingInvoice = await storage.getInvoiceByAppointment(data.appointmentId);
         if (existingInvoice) {
           return res.status(409).json({
             message: "This appointment already has an invoice",
@@ -417,10 +439,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
       }
-      // Generate invoice number
-      const invoiceNumber = `INV-${Date.now()}`;
-      const invoiceData = { ...validatedData, invoiceNumber };
-      const invoice = await storage.createInvoice(invoiceData);
+      const invoice = await storage.createInvoiceWithItems(data);
       res.status(201).json(invoice);
     } catch (error) {
       if (error instanceof z.ZodError) {

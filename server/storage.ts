@@ -33,6 +33,24 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, lt, sql, asc } from "drizzle-orm";
+import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
+
+// Input for server-side invoice creation. Totals are NEVER taken from the
+// client — they are computed here from the validated line items.
+export interface CreateInvoiceInput {
+  ownerId: string;
+  patientId?: string | null;
+  appointmentId?: string | null;
+  dueDate?: Date | null;
+  notes?: string | null;
+  taxRate?: number; // 0..1 (e.g. 0.16 for 16% IVA)
+  items: {
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    treatmentId?: string | null;
+  }[];
+}
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -83,6 +101,8 @@ export interface IStorage {
   getInvoice(id: string): Promise<InvoiceWithDetails | undefined>;
   getInvoiceByAppointment(appointmentId: string): Promise<Invoice | undefined>;
   createInvoice(invoice: InsertInvoice & Pick<Invoice, "invoiceNumber">): Promise<Invoice>;
+  createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails>;
+  getNextInvoiceNumber(): Promise<string>;
   updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice>;
   deleteInvoice(id: string): Promise<void>;
   addInvoiceItem(item: InsertInvoiceItem): Promise<InvoiceItem>;
@@ -534,6 +554,87 @@ export class DatabaseStorage implements IStorage {
       const [created] = await tx.insert(invoices).values(invoice).returning();
       return created;
     });
+  }
+
+  // Sequential, collision-free invoice numbers backed by a Postgres sequence
+  // (replaces `INV-${Date.now()}`, which can collide and isn't ordered).
+  async getNextInvoiceNumber(): Promise<string> {
+    await db.execute(sql`CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START WITH 1`);
+    const result: any = await db.execute(
+      sql`SELECT nextval('invoice_number_seq') AS nextval`
+    );
+    const next = result?.rows?.[0]?.nextval ?? Date.now();
+    return `INV-${String(next).padStart(6, "0")}`;
+  }
+
+  // Creates an invoice + its items atomically, computing all totals server-side
+  // so the client can never dictate the amount charged. Keeps the per-appointment
+  // advisory lock that prevents double-billing the same appointment.
+  async createInvoiceWithItems(input: CreateInvoiceInput): Promise<InvoiceWithDetails> {
+    const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(
+      input.items,
+      input.taxRate ?? 0
+    );
+
+    const invoiceId = await db.transaction(async (tx) => {
+      if (input.appointmentId) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.appointmentId}))`);
+        const [existing] = await tx
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(eq(invoices.appointmentId, input.appointmentId))
+          .limit(1);
+        if (existing) {
+          throw new Error("APPOINTMENT_ALREADY_INVOICED");
+        }
+      }
+
+      // Sequence lives in its own advisory lock so the first CREATE SEQUENCE
+      // can't race across concurrent transactions.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('invoice_number_seq_init'))`);
+      await tx.execute(sql`CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START WITH 1`);
+      const seq: any = await tx.execute(sql`SELECT nextval('invoice_number_seq') AS nextval`);
+      const nextValue = seq?.rows?.[0]?.nextval;
+      if (nextValue === undefined || nextValue === null) {
+        throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
+      }
+      const invoiceNumber = `INV-${String(nextValue).padStart(6, "0")}`;
+
+      const [created] = await tx
+        .insert(invoices)
+        .values({
+          invoiceNumber,
+          ownerId: input.ownerId,
+          patientId: input.patientId ?? null,
+          appointmentId: input.appointmentId ?? null,
+          dueDate: input.dueDate ?? null,
+          notes: input.notes ?? null,
+          subtotal: subtotal.toFixed(2),
+          taxAmount: taxAmount.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          status: "pending",
+        })
+        .returning({ id: invoices.id });
+
+      await tx.insert(invoiceItems).values(
+        input.items.map((it) => ({
+          invoiceId: created.id,
+          treatmentId: it.treatmentId ?? null,
+          description: it.description,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice.toFixed(2),
+          totalPrice: computeInvoiceLineTotal(it).toFixed(2),
+        }))
+      );
+
+      return created.id;
+    });
+
+    const invoice = await this.getInvoice(invoiceId);
+    if (!invoice) {
+      throw new Error("CREATED_INVOICE_NOT_FOUND");
+    }
+    return invoice;
   }
 
   async updateInvoice(id: string, invoice: Partial<InsertInvoice>): Promise<Invoice> {

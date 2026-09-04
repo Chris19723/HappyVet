@@ -88,33 +88,23 @@ export default function ServicesInvoiceModal({
     generationInProgress.current = true;
     setGenerating(true);
     try {
-      const validSubtotal = validItems.reduce((sum, it) => sum + lineTotal(it), 0);
-      const subtotalStr = validSubtotal.toFixed(2);
+      // Server computes subtotal/tax/total from these items and creates the
+      // invoice + items atomically. Client no longer sends any amounts.
       const invoicePayload = {
         ownerId: appointment.patient.ownerId,
         patientId: appointment.patientId,
         appointmentId: appointment.id,
-        subtotal: subtotalStr,
-        taxAmount: "0",
-        totalAmount: subtotalStr,
-        status: "pending",
+        taxRate: 0,
+        items: validItems.map((item) => ({
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: parseFloat(item.unitPrice),
+          treatmentId: item.treatmentId || null,
+        })),
       };
 
       const invoiceRes = await apiRequest("POST", "/api/invoices", invoicePayload);
       const invoice = await invoiceRes.json();
-
-      await Promise.all(
-        validItems.map((item) =>
-          apiRequest("POST", `/api/invoices/${invoice.id}/items`, {
-            invoiceId: invoice.id,
-            treatmentId: item.treatmentId || null,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: parseFloat(item.unitPrice).toFixed(2),
-            totalPrice: lineTotal(item).toFixed(2),
-          })
-        )
-      );
 
       if (appointment.status !== "completed") {
         await apiRequest("PUT", `/api/appointments/${appointment.id}`, { status: "completed" });
