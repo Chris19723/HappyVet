@@ -36,7 +36,7 @@ export default function Owners() {
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: owners, isLoading: ownersLoading, error } = useQuery({
+  const { data: owners, isLoading: ownersLoading, error } = useQuery<Owner[]>({
     queryKey: ["/api/owners"],
     retry: false,
   });

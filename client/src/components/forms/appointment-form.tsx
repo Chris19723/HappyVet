@@ -10,7 +10,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { insertAppointmentSchema, type AppointmentWithDetails, type InsertAppointment } from "@shared/schema";
+import { insertAppointmentSchema, type AppointmentWithDetails, type InsertAppointment, type PatientWithOwner, type User } from "@shared/schema";
 import type { z } from "zod";
 
 const formSchema = insertAppointmentSchema.extend({
@@ -40,12 +40,12 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
     },
   });
 
-  const { data: patients } = useQuery({
+  const { data: patients } = useQuery<PatientWithOwner[]>({
     queryKey: ["/api/patients"],
     retry: false,
   });
 
-  const { data: users } = useQuery({
+  const { data: users } = useQuery<User>({
     queryKey: ["/api/auth/user"],
     retry: false,
   });
@@ -252,7 +252,7 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
             <FormItem>
               <FormLabel>Estado</FormLabel>
               <FormControl>
-                <Select onValueChange={field.onChange} value={field.value}>
+                <Select onValueChange={field.onChange} value={field.value ?? undefined}>
                   <SelectTrigger>
                     <SelectValue placeholder="Estado de la cita" />
                   </SelectTrigger>
@@ -277,9 +277,10 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
             <FormItem>
               <FormLabel>Notas</FormLabel>
               <FormControl>
-                <Textarea 
+                <Textarea
                   placeholder="Información adicional sobre la cita..."
                   {...field}
+                  value={field.value ?? ""}
                 />
               </FormControl>
               <FormMessage />
