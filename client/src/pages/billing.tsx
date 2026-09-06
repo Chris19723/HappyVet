@@ -15,7 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import { PAYMENT_METHODS, paymentMethodLabel } from "@shared/payment";
 import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign, Package, Tag } from "lucide-react";
 import type { InvoiceWithDetails, Treatment, InsertTreatment } from "@shared/schema";
 import {
@@ -102,14 +104,22 @@ export default function Billing() {
   });
 
   const updateInvoiceMutation = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+    mutationFn: async ({ id, status, paymentMethod }: { id: string; status: string; paymentMethod?: string }) => {
       await apiRequest("PUT", `/api/invoices/${id}`, {
         status,
         paymentDate: status === "paid" ? new Date().toISOString() : null,
+        ...(status === "paid" ? { paymentMethod } : {}),
       });
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      // Refresh dashboard revenue (its query keys carry the period in the string).
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          typeof q.queryKey[0] === "string" &&
+          (q.queryKey[0] as string).startsWith("/api/dashboard/revenue"),
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
       trackEvent("invoice_status_updated", { status: variables.status });
       toast({ title: "Factura actualizada" });
     },
@@ -497,6 +507,7 @@ export default function Billing() {
                               <h3 className="text-lg font-semibold text-slate-900">{invoice.invoiceNumber}</h3>
                               <Badge className={getInvoiceStatusColor(invoice.status)}>
                                 {getInvoiceStatusLabel(invoice.status)}
+                                {invoice.status === "paid" ? ` · ${paymentMethodLabel(invoice.paymentMethod)}` : ""}
                               </Badge>
                             </div>
 
@@ -559,14 +570,31 @@ export default function Billing() {
                           <div className="flex flex-col space-y-2 ml-4 shrink-0">
                             {invoice.status === "pending" && (
                               <>
-                                <Button
-                                  size="sm"
-                                  onClick={() => updateInvoiceMutation.mutate({ id: invoice.id, status: "paid" })}
-                                  disabled={updateInvoiceMutation.isPending}
-                                  className="bg-green-600 hover:bg-green-700"
-                                >
-                                  Marcar Pagada
-                                </Button>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      size="sm"
+                                      disabled={updateInvoiceMutation.isPending}
+                                      className="bg-green-600 hover:bg-green-700"
+                                      data-testid={`mark-paid-${invoice.id}`}
+                                    >
+                                      Marcar Pagada
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuLabel>Método de pago</DropdownMenuLabel>
+                                    {PAYMENT_METHODS.map((m) => (
+                                      <DropdownMenuItem
+                                        key={m.value}
+                                        onClick={() =>
+                                          updateInvoiceMutation.mutate({ id: invoice.id, status: "paid", paymentMethod: m.value })
+                                        }
+                                      >
+                                        {m.label}
+                                      </DropdownMenuItem>
+                                    ))}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                                 <Button
                                   variant="outline"
                                   size="sm"
