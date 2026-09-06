@@ -11,8 +11,8 @@ export default function Landing() {
           <div className="flex items-center justify-center space-x-3 mb-6">
             <div className="w-16 h-16 rounded-xl overflow-hidden flex items-center justify-center">
               <img 
-                src="/assets/logo.jpeg" 
-                alt="Happy Animals Logo" 
+                src="/assets/logo.png"
+                alt="Happy Animals Logo"
                 className="w-16 h-16 object-cover rounded-xl"
               />
             </div>

@@ -32,8 +32,8 @@ export default function Sidebar() {
         <div className="flex items-center space-x-3">
           <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center">
             <img 
-              src="/assets/logo.jpeg" 
-              alt="Happy Animals Logo" 
+              src="/assets/logo.png"
+              alt="Happy Animals Logo"
               className="w-10 h-10 object-cover rounded-lg"
             />
           </div>
