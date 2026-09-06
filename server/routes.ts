@@ -19,6 +19,11 @@ import {
   getMonthRangeInTimeZone,
   getRangeFromDayStringsInTimeZone,
 } from "@shared/time";
+import { PAYMENT_METHOD_VALUES } from "@shared/payment";
+
+const paymentMethodEnum = z.enum(
+  PAYMENT_METHOD_VALUES as [string, ...string[]],
+);
 import {
   ObjectStorageService,
   ObjectNotFoundError,
@@ -88,6 +93,9 @@ const createInvoiceRequestSchema = z.object({
   dueDate: z.coerce.date().optional().nullable(),
   notes: z.string().optional().nullable(),
   taxRate: z.number().min(0).max(1).optional(),
+  // Collect on the spot: mark the new invoice paid with its method.
+  markPaid: z.boolean().optional(),
+  paymentMethod: paymentMethodEnum.optional().nullable(),
   items: z
     .array(
       z.object({
@@ -100,7 +108,11 @@ const createInvoiceRequestSchema = z.object({
     )
     .min(1)
     .max(100),
-}).strict();
+}).strict()
+  .refine((d) => !d.markPaid || !!d.paymentMethod, {
+    message: "Indica el método de pago al cobrar.",
+    path: ["paymentMethod"],
+  });
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
@@ -180,12 +192,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Periodo inválido. Usa day, week, month o from/to." });
       }
 
-      const total = await storage.getRevenueBetween(range.start, range.end);
+      const [total, byMethod] = await Promise.all([
+        storage.getRevenueBetween(range.start, range.end),
+        storage.getRevenueByMethodBetween(range.start, range.end),
+      ]);
       res.json({
         period: resolvedPeriod,
         from: range.start.toISOString(),
         to: range.end.toISOString(),
         total,
+        byMethod,
         label: buildRevenueLabel(resolvedPeriod, range, CLINIC_TIMEZONE),
       });
     } catch (error) {
@@ -561,6 +577,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
       const validatedData = insertInvoiceSchema.partial().parse(payload);
+
+      // Validate the payment method and require it when marking the invoice paid.
+      if (validatedData.paymentMethod != null) {
+        const method = paymentMethodEnum.safeParse(validatedData.paymentMethod);
+        if (!method.success) {
+          return res.status(400).json({ message: "Método de pago inválido." });
+        }
+      }
+      if (validatedData.status === "paid" && !validatedData.paymentMethod) {
+        return res.status(400).json({ message: "Indica el método de pago al marcar la factura como pagada." });
+      }
+
       const invoice = await storage.updateInvoice(req.params.id, validatedData);
       res.json(invoice);
     } catch (error) {

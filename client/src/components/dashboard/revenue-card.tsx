@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DollarSign } from "lucide-react";
+import { paymentMethodLabel } from "@shared/payment";
 
 type Period = "day" | "week" | "month" | "custom";
 
@@ -11,6 +12,7 @@ interface RevenueResponse {
   from: string;
   to: string;
   total: number;
+  byMethod?: { method: string; total: number }[];
   label: string;
 }
 
@@ -103,6 +105,20 @@ export default function RevenueCard() {
               className="h-8 text-xs"
               data-testid="revenue-to"
             />
+          </div>
+        )}
+
+        {data?.byMethod && data.byMethod.length > 0 && data.total > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
+            {data.byMethod
+              .slice()
+              .sort((a, b) => b.total - a.total)
+              .map((m) => (
+                <div key={m.method} className="flex items-center justify-between text-xs text-slate-500">
+                  <span>{paymentMethodLabel(m.method)}</span>
+                  <span className="font-medium text-slate-700">${m.total.toFixed(2)}</span>
+                </div>
+              ))}
           </div>
         )}
       </CardContent>

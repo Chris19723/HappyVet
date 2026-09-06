@@ -50,6 +50,10 @@ export interface CreateInvoiceInput {
   dueDate?: Date | null;
   notes?: string | null;
   taxRate?: number; // 0..1 (e.g. 0.16 for 16% IVA)
+  // When the sale is collected on the spot, create the invoice already paid
+  // with its payment method instead of leaving it pending.
+  markPaid?: boolean;
+  paymentMethod?: string | null;
   items: {
     description: string;
     quantity: number;
@@ -176,6 +180,7 @@ export interface IStorage {
     lowStock: number;
   }>;
   getRevenueBetween(start: Date, end: Date): Promise<number>;
+  getRevenueByMethodBetween(start: Date, end: Date): Promise<{ method: string; total: number }[]>;
   getRecentActivity(): Promise<{
     id: string;
     type: "success" | "info" | "warning";
@@ -720,7 +725,10 @@ export class DatabaseStorage implements IStorage {
           subtotal: subtotal.toFixed(2),
           taxAmount: taxAmount.toFixed(2),
           totalAmount: totalAmount.toFixed(2),
-          status: "pending",
+          // Collected on the spot? Create it already paid with its method.
+          status: input.markPaid ? "paid" : "pending",
+          paymentDate: input.markPaid ? new Date() : null,
+          paymentMethod: input.markPaid ? (input.paymentMethod ?? null) : null,
         })
         .returning({ id: invoices.id });
 
@@ -948,6 +956,30 @@ export class DatabaseStorage implements IStorage {
         )
       );
     return Number(result.total);
+  }
+
+  // Paid revenue in [start, end) grouped by payment method. Invoices paid
+  // before this feature existed have a null method and are reported under
+  // "sin_especificar".
+  async getRevenueByMethodBetween(
+    start: Date,
+    end: Date
+  ): Promise<{ method: string; total: number }[]> {
+    const rows = await db
+      .select({
+        method: sql<string>`coalesce(${invoices.paymentMethod}, 'sin_especificar')`,
+        total: sql<number>`COALESCE(sum(${invoices.totalAmount}), 0)`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          sql`${invoices.issueDate} >= ${start}`,
+          sql`${invoices.issueDate} < ${end}`,
+          eq(invoices.status, "paid")
+        )
+      )
+      .groupBy(sql`coalesce(${invoices.paymentMethod}, 'sin_especificar')`);
+    return rows.map((r) => ({ method: r.method, total: Number(r.total) }));
   }
 
   async getRecentActivity(): Promise<{

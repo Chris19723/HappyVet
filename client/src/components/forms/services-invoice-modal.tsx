@@ -9,8 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Plus, Trash2, Receipt } from "lucide-react";
 import type { AppointmentWithDetails, Treatment, InventoryItem, Owner } from "@shared/schema";
+import { PAYMENT_METHODS, type PaymentMethod } from "@shared/payment";
 
 interface LineItem {
   _id: string;
@@ -44,6 +47,9 @@ export default function ServicesInvoiceModal({
   const [items, setItems] = useState<LineItem[]>([emptyItem()]);
   const [generating, setGenerating] = useState(false);
   const [saleOwnerId, setSaleOwnerId] = useState<string>("");
+  // Sales/appointments are usually collected on the spot, so default to charging now.
+  const [chargeNow, setChargeNow] = useState(true);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("efectivo");
   const generationInProgress = useRef(false);
 
   const { data: treatments } = useQuery<Treatment[]>({
@@ -151,6 +157,8 @@ export default function ServicesInvoiceModal({
         patientId,
         appointmentId,
         taxRate: 0,
+        markPaid: chargeNow,
+        paymentMethod: chargeNow ? paymentMethod : null,
         items: validItems.map((item) => ({
           description: item.description,
           quantity: item.quantity,
@@ -166,6 +174,8 @@ export default function ServicesInvoiceModal({
         source: appointment ? "appointment" : "walk_in",
         item_count: validItems.length,
         inventory_item_count: validItems.filter((item) => Boolean(item.inventoryItemId)).length,
+        collected: chargeNow,
+        payment_method: chargeNow ? paymentMethod : "pendiente",
       });
 
       // Only appointment invoicing marks the appointment completed.
@@ -351,6 +361,38 @@ export default function ServicesInvoiceModal({
           <span className="text-primary">${subtotal.toFixed(2)} MXN</span>
         </div>
 
+        {/* Payment: charge now + method */}
+        <div className="mt-4 rounded-lg border border-slate-200 p-3 space-y-3">
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              id="charge-now"
+              checked={chargeNow}
+              onCheckedChange={(v) => setChargeNow(v === true)}
+              data-testid="charge-now"
+            />
+            <Label htmlFor="charge-now" className="cursor-pointer text-sm font-medium">
+              Cobrar ahora
+            </Label>
+          </div>
+          {chargeNow ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-600">Método:</span>
+              <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as PaymentMethod)}>
+                <SelectTrigger className="h-8 w-44 text-sm" data-testid="payment-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_METHODS.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">La factura quedará como <b>pendiente</b>; podrás cobrarla después en Facturación.</p>
+          )}
+        </div>
+
         {/* Actions */}
         <div className="flex justify-end gap-2 mt-4">
           <Button type="button" variant="outline" onClick={handleClose} disabled={generating}>
@@ -363,7 +405,7 @@ export default function ServicesInvoiceModal({
             className="gap-2"
           >
             <Receipt className="h-4 w-4" />
-            {generating ? "Generando..." : isSale ? "Cobrar" : "Generar Factura"}
+            {generating ? "Generando..." : chargeNow ? "Cobrar" : "Generar factura (pendiente)"}
           </Button>
         </div>
       </DialogContent>

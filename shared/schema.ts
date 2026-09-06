@@ -130,6 +130,7 @@ export const invoices = pgTable("invoices", {
   totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
   status: varchar("status").default("pending"), // pending, paid, overdue, cancelled
   paymentDate: timestamp("payment_date"),
+  paymentMethod: varchar("payment_method"), // efectivo, tarjeta, transferencia (set when paid)
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
