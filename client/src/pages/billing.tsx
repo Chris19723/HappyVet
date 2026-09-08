@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import { PAYMENT_METHODS, paymentMethodLabel } from "@shared/payment";
+import InvoiceReceipt from "@/components/billing/invoice-receipt";
 import { Plus, Search, Edit, Trash2, Receipt, User, Calendar, DollarSign, Package, Tag } from "lucide-react";
 import type { InvoiceWithDetails, Treatment, InsertTreatment } from "@shared/schema";
 import {
@@ -76,6 +77,17 @@ export default function Billing() {
   const [period, setPeriod] = useState<BillingPeriod>("all");
   const [periodFrom, setPeriodFrom] = useState("");
   const [periodTo, setPeriodTo] = useState("");
+  const [printInvoice, setPrintInvoice] = useState<InvoiceWithDetails | null>(null);
+
+  // Print the ticket once its receipt has rendered, then clear it.
+  useEffect(() => {
+    if (!printInvoice) return;
+    const t = setTimeout(() => {
+      window.print();
+      setPrintInvoice(null);
+    }, 200);
+    return () => clearTimeout(t);
+  }, [printInvoice]);
 
   const [treatmentDialogOpen, setTreatmentDialogOpen] = useState(false);
   const [editingTreatment, setEditingTreatment] = useState<Treatment | null>(null);
@@ -605,7 +617,7 @@ export default function Billing() {
                                 </Button>
                               </>
                             )}
-                            <Button variant="outline" size="sm" onClick={() => window.print()}>
+                            <Button variant="outline" size="sm" onClick={() => setPrintInvoice(invoice)}>
                               Imprimir
                             </Button>
                           </div>
@@ -821,6 +833,11 @@ export default function Billing() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Print-only ticket: isolated by @media print in index.css */}
+      <div id="receipt-print">
+        {printInvoice && <InvoiceReceipt invoice={printInvoice} />}
+      </div>
     </div>
   );
 }
