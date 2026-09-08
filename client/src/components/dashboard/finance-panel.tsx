@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { TrendingUp, TrendingDown, Scale } from "lucide-react";
 import { expenseCategoryLabel } from "@shared/expense";
+import { paymentMethodLabel } from "@shared/payment";
 
 type Period = "day" | "week" | "month" | "custom";
 
@@ -16,6 +17,7 @@ const PERIODS: { key: Period; label: string }[] = [
 
 interface RevenueResponse {
   total: number;
+  byMethod?: { method: string; total: number }[];
   label: string;
 }
 interface ExpenseResponse {
@@ -62,6 +64,9 @@ export default function FinancePanel() {
   const loading = Boolean(qs) && (revenueQuery.isLoading || expenseQuery.isLoading);
 
   const byCategory = (expenseQuery.data?.byCategory ?? [])
+    .slice()
+    .sort((a, b) => b.total - a.total);
+  const incomeByMethod = (revenueQuery.data?.byMethod ?? [])
     .slice()
     .sort((a, b) => b.total - a.total);
 
@@ -122,17 +127,43 @@ export default function FinancePanel() {
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-          <span className="text-slate-500">
-            Gastos personales: <span className="font-medium text-slate-700">{money(personal)} MXN</span>
-            <span className="text-slate-400"> (aparte del balance)</span>
-          </span>
-          {byCategory.length > 0 && (
-            <span className="text-slate-400 text-xs">
-              {byCategory.map((c) => `${expenseCategoryLabel(c.category)}: $${c.total.toFixed(0)}`).join(" · ")}
-            </span>
-          )}
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">Ingresos por método</p>
+            {incomeByMethod.length === 0 ? (
+              <p className="text-sm text-slate-400">—</p>
+            ) : (
+              <div className="space-y-1">
+                {incomeByMethod.map((m) => (
+                  <div key={m.method} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600">{paymentMethodLabel(m.method)}</span>
+                    <span className="font-medium text-slate-800 tabular-nums">{money(m.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">Egresos por categoría</p>
+            {byCategory.length === 0 ? (
+              <p className="text-sm text-slate-400">—</p>
+            ) : (
+              <div className="space-y-1">
+                {byCategory.map((c) => (
+                  <div key={c.category} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600">{expenseCategoryLabel(c.category)}</span>
+                    <span className="font-medium text-slate-800 tabular-nums">{money(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
+
+        <p className="mt-4 pt-3 border-t border-slate-100 text-sm text-slate-500">
+          Gastos personales: <span className="font-medium text-slate-700 tabular-nums">{money(personal)} MXN</span>
+          <span className="text-slate-400"> · no cuentan en el balance del negocio</span>
+        </p>
       </CardContent>
     </Card>
   );
