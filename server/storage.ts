@@ -8,6 +8,10 @@ import {
   invoices,
   invoiceItems,
   inventoryItems,
+  expenses,
+  type Expense,
+  type InsertExpense,
+  type ExpenseWithItem,
   type User,
   type UpsertUser,
   type Owner,
@@ -35,11 +39,26 @@ import { db } from "./db";
 import { eq, desc, and, lt, sql, asc, gte, isNotNull } from "drizzle-orm";
 import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
 import { getDayRangeInTimeZone, getMonthRangeInTimeZone } from "@shared/time";
+import { PERSONAL_CATEGORY } from "@shared/expense";
 
 // The clinic's timezone anchors "today" / "this month" on the dashboard. The
 // server runs in UTC in the cloud, so without this a late-evening appointment
 // would roll into the next day. Configurable via CLINIC_TIMEZONE.
 const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
+
+// Input for creating an expense. When it's an inventory purchase, the stock is
+// increased by `quantity` in the same transaction.
+export interface CreateExpenseInput {
+  date?: Date | null;
+  amount: number;
+  category: string;
+  description?: string | null;
+  supplier?: string | null;
+  paymentMethod?: string | null;
+  inventoryItemId?: string | null;
+  quantity?: number | null;
+  notes?: string | null;
+}
 
 // Input for server-side invoice creation. Totals are NEVER taken from the
 // client — they are computed here from the validated line items.
@@ -171,6 +190,18 @@ export interface IStorage {
   createInventoryItem(item: InsertInventoryItem): Promise<InventoryItem>;
   updateInventoryItem(id: string, item: Partial<InsertInventoryItem>): Promise<InventoryItem>;
   deleteInventoryItem(id: string): Promise<void>;
+
+  // Expense operations
+  getExpenses(range?: { start: Date; end: Date }): Promise<ExpenseWithItem[]>;
+  createExpense(input: CreateExpenseInput): Promise<Expense>;
+  deleteExpense(id: string): Promise<void>;
+  getExpenseSummaryBetween(start: Date, end: Date): Promise<{
+    total: number;
+    business: number;
+    personal: number;
+    byCategory: { category: string; total: number }[];
+    byMethod: { method: string; total: number }[];
+  }>;
 
   // Dashboard statistics
   getDashboardStats(): Promise<{
@@ -885,6 +916,140 @@ export class DatabaseStorage implements IStorage {
 
   async deleteInventoryItem(id: string): Promise<void> {
     await db.update(inventoryItems).set({ isActive: false }).where(eq(inventoryItems.id, id));
+  }
+
+  // Expense operations
+  async getExpenses(range?: { start: Date; end: Date }): Promise<ExpenseWithItem[]> {
+    const rows = await db
+      .select()
+      .from(expenses)
+      .leftJoin(inventoryItems, eq(expenses.inventoryItemId, inventoryItems.id))
+      .where(
+        range
+          ? and(
+              sql`${expenses.date} >= ${range.start}`,
+              sql`${expenses.date} < ${range.end}`
+            )
+          : undefined
+      )
+      .orderBy(desc(expenses.date));
+    return rows.map((r) => ({
+      ...r.expenses,
+      inventoryItem: r.inventory_items ?? null,
+    }));
+  }
+
+  async createExpense(input: CreateExpenseInput): Promise<Expense> {
+    return await db.transaction(async (tx) => {
+      // Inventory purchase: add the bought quantity to stock atomically.
+      if (input.inventoryItemId && input.quantity && input.quantity > 0) {
+        const [item] = await tx
+          .select({ id: inventoryItems.id })
+          .from(inventoryItems)
+          .where(eq(inventoryItems.id, input.inventoryItemId))
+          .limit(1);
+        if (!item) {
+          throw new Error(`INVENTORY_ITEM_NOT_FOUND:${input.inventoryItemId}`);
+        }
+        await tx
+          .update(inventoryItems)
+          .set({
+            currentStock: sql`coalesce(${inventoryItems.currentStock}, 0) + ${input.quantity}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(inventoryItems.id, input.inventoryItemId));
+      }
+
+      const [created] = await tx
+        .insert(expenses)
+        .values({
+          date: input.date ?? new Date(),
+          amount: input.amount.toFixed(2),
+          category: input.category,
+          description: input.description ?? null,
+          supplier: input.supplier ?? null,
+          paymentMethod: input.paymentMethod ?? null,
+          inventoryItemId: input.inventoryItemId ?? null,
+          quantity: input.quantity ?? null,
+          notes: input.notes ?? null,
+        })
+        .returning();
+      return created;
+    });
+  }
+
+  async deleteExpense(id: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [expense] = await tx
+        .select({
+          inventoryItemId: expenses.inventoryItemId,
+          quantity: expenses.quantity,
+        })
+        .from(expenses)
+        .where(eq(expenses.id, id))
+        .limit(1);
+
+      // Reverse the stock a purchase added (floored at 0 so it never goes negative).
+      if (expense?.inventoryItemId && expense.quantity && expense.quantity > 0) {
+        await tx
+          .update(inventoryItems)
+          .set({
+            currentStock: sql`greatest(coalesce(${inventoryItems.currentStock}, 0) - ${expense.quantity}, 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(inventoryItems.id, expense.inventoryItemId));
+      }
+
+      await tx.delete(expenses).where(eq(expenses.id, id));
+    });
+  }
+
+  async getExpenseSummaryBetween(start: Date, end: Date): Promise<{
+    total: number;
+    business: number;
+    personal: number;
+    byCategory: { category: string; total: number }[];
+    byMethod: { method: string; total: number }[];
+  }> {
+    const inRange = and(
+      sql`${expenses.date} >= ${start}`,
+      sql`${expenses.date} < ${end}`
+    );
+
+    const byCategoryRows = await db
+      .select({
+        category: expenses.category,
+        total: sql<number>`COALESCE(sum(${expenses.amount}), 0)`,
+      })
+      .from(expenses)
+      .where(inRange)
+      .groupBy(expenses.category);
+
+    const byMethodRows = await db
+      .select({
+        method: sql<string>`coalesce(${expenses.paymentMethod}, 'sin_especificar')`,
+        total: sql<number>`COALESCE(sum(${expenses.amount}), 0)`,
+      })
+      .from(expenses)
+      .where(inRange)
+      .groupBy(sql`coalesce(${expenses.paymentMethod}, 'sin_especificar')`);
+
+    const byCategory = byCategoryRows.map((r) => ({
+      category: r.category,
+      total: Number(r.total),
+    }));
+    const byMethod = byMethodRows.map((r) => ({
+      method: r.method,
+      total: Number(r.total),
+    }));
+
+    const total = byCategory.reduce((s, c) => s + c.total, 0);
+    const personal = byCategory
+      .filter((c) => c.category === PERSONAL_CATEGORY)
+      .reduce((s, c) => s + c.total, 0);
+    const business = total - personal;
+
+    return { total, business, personal, byCategory, byMethod };
   }
 
   // Dashboard statistics

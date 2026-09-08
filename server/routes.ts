@@ -20,10 +20,30 @@ import {
   getRangeFromDayStringsInTimeZone,
 } from "@shared/time";
 import { PAYMENT_METHOD_VALUES } from "@shared/payment";
+import { EXPENSE_CATEGORY_VALUES } from "@shared/expense";
 
 const paymentMethodEnum = z.enum(
   PAYMENT_METHOD_VALUES as [string, ...string[]],
 );
+const expenseCategoryEnum = z.enum(
+  EXPENSE_CATEGORY_VALUES as [string, ...string[]],
+);
+
+const createExpenseRequestSchema = z.object({
+  date: z.coerce.date().optional().nullable(),
+  amount: z.number().positive(),
+  category: expenseCategoryEnum,
+  description: z.string().optional().nullable(),
+  supplier: z.string().optional().nullable(),
+  paymentMethod: paymentMethodEnum.optional().nullable(),
+  inventoryItemId: z.string().min(1).optional().nullable(),
+  quantity: z.number().int().positive().optional().nullable(),
+  notes: z.string().optional().nullable(),
+}).strict()
+  .refine((d) => d.category !== "inventario" || (!!d.inventoryItemId && !!d.quantity), {
+    message: "La compra de inventario requiere producto y cantidad.",
+    path: ["inventoryItemId"],
+  });
 import {
   ObjectStorageService,
   ObjectNotFoundError,
@@ -207,6 +227,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching revenue:", error);
       res.status(500).json({ message: "Failed to fetch revenue" });
+    }
+  });
+
+  // Resolve a ?period=day|week|month or ?from&to query into a [start,end) range.
+  function resolveRange(req: any): { start: Date; end: Date } | { error: string } {
+    const now = new Date();
+    const period = String(req.query.period ?? "month");
+    const fromQ = req.query.from ? String(req.query.from) : undefined;
+    const toQ = req.query.to ? String(req.query.to) : undefined;
+    if (fromQ || toQ) {
+      if (!fromQ || !toQ) return { error: "Indica ambas fechas: from y to." };
+      const r = getRangeFromDayStringsInTimeZone(fromQ, toQ, CLINIC_TIMEZONE);
+      return r ?? { error: "Rango de fechas inválido." };
+    }
+    if (period === "day") return getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
+    if (period === "week") return getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
+    if (period === "month") return getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
+    return { error: "Periodo inválido. Usa day, week, month o from/to." };
+  }
+
+  // Expense summary for a period: total, business/personal split, by category, by method.
+  app.get("/api/dashboard/expenses", isAuthenticated, async (req, res) => {
+    try {
+      const range = resolveRange(req);
+      if ("error" in range) return res.status(400).json({ message: range.error });
+      const summary = await storage.getExpenseSummaryBetween(range.start, range.end);
+      res.json({
+        from: range.start.toISOString(),
+        to: range.end.toISOString(),
+        label: buildRevenueLabel(String(req.query.period ?? (req.query.from ? "custom" : "month")), range, CLINIC_TIMEZONE),
+        ...summary,
+      });
+    } catch (error) {
+      console.error("Error fetching expense summary:", error);
+      res.status(500).json({ message: "Failed to fetch expense summary" });
+    }
+  });
+
+  // Expense CRUD
+  app.get("/api/expenses", isAuthenticated, async (req, res) => {
+    try {
+      let range: { start: Date; end: Date } | undefined;
+      if (req.query.from || req.query.to || req.query.period) {
+        const r = resolveRange(req);
+        if ("error" in r) return res.status(400).json({ message: r.error });
+        range = r;
+      }
+      const list = await storage.getExpenses(range);
+      res.json(list);
+    } catch (error) {
+      console.error("Error fetching expenses:", error);
+      res.status(500).json({ message: "Failed to fetch expenses" });
+    }
+  });
+
+  app.post("/api/expenses", isAuthenticated, async (req, res) => {
+    try {
+      const data = createExpenseRequestSchema.parse(req.body);
+      const expense = await storage.createExpense(data);
+      res.status(201).json(expense);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      if (error instanceof Error && error.message.startsWith("INVENTORY_ITEM_NOT_FOUND:")) {
+        return res.status(400).json({ message: "Producto de inventario no encontrado." });
+      }
+      console.error("Error creating expense:", error);
+      res.status(500).json({ message: "Failed to create expense" });
+    }
+  });
+
+  app.delete("/api/expenses/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+    try {
+      await storage.deleteExpense(req.params.id);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting expense:", error);
+      res.status(500).json({ message: "Failed to delete expense" });
     }
   });
 

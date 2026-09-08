@@ -14,6 +14,7 @@ import Appointments from "@/pages/appointments";
 import MedicalRecords from "@/pages/medical-records";
 import Billing from "@/pages/billing";
 import Inventory from "@/pages/inventory";
+import Expenses from "@/pages/expenses";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -27,6 +28,7 @@ function Router() {
       <Route path="/medical-records" component={MedicalRecords} />
       <Route path="/billing" component={Billing} />
       <Route path="/inventory" component={Inventory} />
+      <Route path="/expenses" component={Expenses} />
       <Route path="/">
         {isLoading || !isAuthenticated ? <Landing /> : <Dashboard />}
       </Route>
