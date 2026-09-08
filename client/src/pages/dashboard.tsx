@@ -6,6 +6,7 @@ import { isUnauthorizedError } from "@/lib/authUtils";
 import Sidebar from "@/components/layout/sidebar";
 import Header from "@/components/layout/header";
 import StatsCards from "@/components/dashboard/stats-cards";
+import FinancePanel from "@/components/dashboard/finance-panel";
 import AppointmentsToday from "@/components/dashboard/appointments-today";
 import QuickActions from "@/components/dashboard/quick-actions";
 import RecentActivity from "@/components/dashboard/recent-activity";
@@ -77,7 +78,9 @@ export default function Dashboard() {
         
         <div className="p-6 space-y-6">
           <StatsCards stats={stats} isLoading={statsLoading} />
-          
+
+          <FinancePanel />
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <AppointmentsToday 
