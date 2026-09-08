@@ -99,3 +99,27 @@
     border-color: hsl(var(--warning) / 0.2);
   }
 }
+
+/* ---- Thermal ticket receipt (80mm) ---- */
+#receipt-print { display: none; }
+
+.receipt { width: 72mm; font-family: "Courier New", ui-monospace, monospace; color: #000; font-size: 12px; line-height: 1.35; }
+.receipt-center { text-align: center; }
+.receipt-logo { width: 40mm; height: auto; margin: 0 auto 4px; display: block; filter: grayscale(1) contrast(1.15); }
+.receipt-title { font-weight: 700; font-size: 14px; }
+.receipt-muted { font-size: 11px; }
+.receipt-sep { border-top: 1px dashed #000; margin: 6px 0; }
+.receipt-row { display: flex; justify-content: space-between; gap: 8px; }
+.receipt-items-head { display: flex; justify-content: space-between; font-weight: 700; }
+.receipt-item { margin: 3px 0; }
+.receipt-item-desc { font-weight: 600; }
+.receipt-item-line { font-size: 11px; }
+.receipt-total { font-weight: 700; font-size: 14px; }
+.receipt-footer { margin-top: 6px; }
+
+@media print {
+  body * { visibility: hidden !important; }
+  #receipt-print, #receipt-print * { visibility: visible !important; }
+  #receipt-print { display: block !important; position: absolute; left: 0; top: 0; width: 72mm; }
+}
+@page { size: 80mm auto; margin: 4mm; }
