@@ -165,6 +165,24 @@ export const inventoryItems = pgTable("inventory_items", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Expenses / egresos table. Tracks money going out: inventory purchases (which
+// also add stock), supplier costs, operating costs, and personal spending.
+export const expenses = pgTable("expenses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  date: timestamp("date").defaultNow(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  category: varchar("category").notNull(), // inventario, proveedor, operativo, personal
+  description: text("description"),
+  supplier: varchar("supplier"),
+  paymentMethod: varchar("payment_method"), // efectivo, tarjeta, transferencia
+  // Set when the expense is an inventory purchase: adds `quantity` to stock.
+  inventoryItemId: varchar("inventory_item_id").references(() => inventoryItems.id),
+  quantity: integer("quantity"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // Relations
 export const ownersRelations = relations(owners, ({ many }) => ({
   patients: many(patients),
@@ -298,6 +316,12 @@ export const insertInventoryItemSchema = createInsertSchema(inventoryItems).omit
   updatedAt: true,
 });
 
+export const insertExpenseSchema = createInsertSchema(expenses).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 // Types
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
@@ -339,3 +363,7 @@ export type InvoiceItem = typeof invoiceItems.$inferSelect;
 
 export type InsertInventoryItem = z.infer<typeof insertInventoryItemSchema>;
 export type InventoryItem = typeof inventoryItems.$inferSelect;
+
+export type InsertExpense = z.infer<typeof insertExpenseSchema>;
+export type Expense = typeof expenses.$inferSelect;
+export type ExpenseWithItem = Expense & { inventoryItem?: InventoryItem | null };

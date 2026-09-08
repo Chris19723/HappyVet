@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Heart, LayoutDashboard, Users, Calendar, FileText, Receipt, Package, BarChart3, User, LogOut } from "lucide-react";
+import { Heart, LayoutDashboard, Users, Calendar, FileText, Receipt, Package, BarChart3, User, LogOut, TrendingDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import type { User as UserType } from "@shared/schema";
@@ -16,6 +16,7 @@ export default function Sidebar() {
     { href: "/medical-records", label: "Historiales Médicos", icon: FileText },
     { href: "/billing", label: "Facturación", icon: Receipt },
     { href: "/inventory", label: "Inventario", icon: Package },
+    { href: "/expenses", label: "Gastos", icon: TrendingDown },
   ];
 
   const isActive = (href: string) => {
