@@ -405,8 +405,13 @@ Repository:
 Canonical code branch:
 `main`
 
-Canonical application-code baseline:
+Verified application-code baseline before canonical-doc sync:
 `0b826c0281380b4e2526c242407a60ec47597700`
+
+HA-DOCS-001:
+COMPLETE / MERGED through GitHub PR #21.
+
+Current `main` includes canonical documentation as a docs-only descendant of the verified application-code baseline.
 
 Current deployment:
 `https://happy-vet.replit.app`
@@ -513,9 +518,9 @@ No implementation authorization.
 
 ## 21. NEXT SEQUENCE
 
-1. Complete HA-DOCS-001: place canonical docs in verified GitHub repository.
+1. Produce and authorize HA-FOUND-001: Organization / Branch / Membership / tenant isolation foundation.
 2. Continue HA-GROWTH-001A first-party discovery in parallel.
-3. Execute HA-FOUND-001: Organization / Branch / Membership / tenant isolation foundation.
+3. Execute HA-FOUND-001 with one active writer after HQ authorization.
 4. Execute HA-FOUND-002: versioned migrations + sensitive logging baseline.
 5. Security/QA review the foundation.
 6. Reconcile Market + Product + Architecture evidence.
