@@ -18,6 +18,8 @@ FOUNDATION REMEDIATION: MAY BE AUTHORIZED BY EXPLICIT HQ TASK PACKET
 - 01 completed domain / tenancy / security baseline.
 - Gate 0D was approved by HQ.
 - HA-GROWTH-001A.1 account universe completed; first-party interviews remain pending/active.
+- HA-DOCS-001 completed and merged through GitHub PR #21.
+- Canonical documentation now exists in the verified repository under `canonical/`, with `MASTER_PROJECT_BUILDER_V2_MULTI_AI_DESIGN.md` at repository root.
 
 ### REPOSITORY / CODE BASELINE
 
@@ -27,13 +29,15 @@ Repository:
 Default/canonical branch:
 `main`
 
-Canonical application-code baseline:
+Verified application-code baseline before canonical-doc sync:
 `0b826c0281380b4e2526c242407a60ec47597700`
+
+Current `main` includes the docs-only HA-DOCS-001 merge as a descendant of that application-code baseline.
 
 Repository reconciliation:
 PASS.
 
-HA-REPO-002 normalized Replit local `main` to the same SHA as `origin/main`.
+HA-REPO-002 normalized Replit local `main` to the same application-code baseline as `origin/main` before HA-DOCS-001.
 
 The seven Replit Publishing commits reviewed between `0b826c0` and `2d29e00` were empty and changed no application tree.
 
@@ -274,9 +278,11 @@ STATUS: AUTHORIZED / ACTIVE
 
 ### HA-DOCS-001
 OWNER: 00-HQ
-STATUS: ACTIVE
+STATUS: COMPLETE / MERGED
+EVIDENCE:
+GitHub PR #21 merged to `main`.
 PURPOSE:
-Place canonical documentation into verified GitHub repository on a dedicated docs branch and PR.
+Canonical documentation synchronized into the verified repository.
 
 ### HA-FOUND-001
 OWNER: 01/03, preferred active writer Codex
@@ -385,12 +391,11 @@ Blocks:
 
 ## NEXT ACTIONS
 
-1. Complete HA-DOCS-001 canonical docs PR.
+1. Produce HA-FOUND-001 task packet.
 2. Continue HA-GROWTH-001A first-party discovery in parallel.
-3. Produce HA-FOUND-001 task packet.
-4. Implement tenant foundation with one active writer.
-5. Produce/implement HA-FOUND-002 versioned migration + logging baseline.
-6. Security/QA review foundation.
-7. Authorize HA-CLIN-001 only after foundation acceptance.
-8. Authorize HA-CLIN-002 only after backend contracts are stable.
-9. Continue Gate 0A/0B/0C/0F decisions using first-party evidence.
+3. Implement tenant foundation with one active writer after HQ authorization.
+4. Produce/implement HA-FOUND-002 versioned migration + logging baseline.
+5. Security/QA review foundation.
+6. Authorize HA-CLIN-001 only after foundation acceptance.
+7. Authorize HA-CLIN-002 only after backend contracts are stable.
+8. Continue Gate 0A/0B/0C/0F decisions using first-party evidence.
