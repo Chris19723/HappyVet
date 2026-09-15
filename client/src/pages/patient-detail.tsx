@@ -391,7 +391,7 @@ export default function PatientDetail() {
                               </p>
                             </div>
                             <p className="text-sm text-slate-500">
-                              Dr. {record.veterinarian.firstName} {record.veterinarian.lastName}
+                              {record.veterinarian ? `Dr. ${record.veterinarian.firstName ?? ""} ${record.veterinarian.lastName ?? ""}` : "—"}
                             </p>
                           </div>
                           <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">

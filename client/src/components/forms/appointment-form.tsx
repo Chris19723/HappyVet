@@ -11,7 +11,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { insertAppointmentSchema, type AppointmentWithDetails, type InsertAppointment, type PatientWithOwner, type User } from "@shared/schema";
+import { insertAppointmentSchema, type AppointmentWithDetails, type InsertAppointment, type PatientWithOwner } from "@shared/schema";
 import type { z } from "zod";
 
 const formSchema = insertAppointmentSchema.extend({
@@ -32,7 +32,6 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
     resolver: zodResolver(formSchema),
     defaultValues: {
       patientId: "",
-      veterinarianId: "",
       appointmentDate: new Date(),
       duration: 30,
       reason: "",
@@ -46,27 +45,18 @@ export default function AppointmentForm({ appointment, onSuccess }: AppointmentF
     retry: false,
   });
 
-  const { data: users } = useQuery<User>({
-    queryKey: ["/api/auth/user"],
-    retry: false,
-  });
-
   useEffect(() => {
     if (appointment) {
       form.reset({
         patientId: appointment.patientId,
-        veterinarianId: appointment.veterinarianId,
         appointmentDate: new Date(appointment.appointmentDate),
         duration: appointment.duration || 30,
         reason: appointment.reason,
         status: appointment.status,
         notes: appointment.notes || "",
       });
-    } else if (users) {
-      // Set current user as default veterinarian
-      form.setValue("veterinarianId", users.id);
     }
-  }, [appointment, users, form]);
+  }, [appointment, form]);
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertAppointment) => {

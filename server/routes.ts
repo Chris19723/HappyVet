@@ -1,15 +1,21 @@
-import type { Express } from "express";
+import type { Express, Response } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
-import { setupAuth, isAuthenticated, requireRole } from "./replitAuth";
-import { 
+import { storage, CrossTenantError } from "./storage";
+import { setupAuth, isAuthenticated } from "./replitAuth";
+import {
+  withTenant,
+  getTenant,
+  requireTenantRole,
+  TenantError,
+  PRIVILEGED_ROLES,
+} from "./tenantContext";
+import {
   insertOwnerSchema,
   insertPatientSchema,
   insertAppointmentSchema,
   insertMedicalRecordSchema,
   insertTreatmentSchema,
   insertInvoiceSchema,
-  insertInvoiceItemSchema,
   insertInventoryItemSchema,
 } from "@shared/schema";
 import { z } from "zod";
@@ -21,13 +27,16 @@ import {
 } from "@shared/time";
 import { PAYMENT_METHOD_VALUES } from "@shared/payment";
 import { EXPENSE_CATEGORY_VALUES } from "@shared/expense";
+import {
+  ObjectStorageService,
+  ObjectNotFoundError,
+} from "./objectStorage.js";
+import { ObjectPermission } from "./objectAcl.js";
 
-const paymentMethodEnum = z.enum(
-  PAYMENT_METHOD_VALUES as [string, ...string[]],
-);
-const expenseCategoryEnum = z.enum(
-  EXPENSE_CATEGORY_VALUES as [string, ...string[]],
-);
+const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
+
+const paymentMethodEnum = z.enum(PAYMENT_METHOD_VALUES as [string, ...string[]]);
+const expenseCategoryEnum = z.enum(EXPENSE_CATEGORY_VALUES as [string, ...string[]]);
 
 const createExpenseRequestSchema = z.object({
   date: z.coerce.date().optional().nullable(),
@@ -44,68 +53,7 @@ const createExpenseRequestSchema = z.object({
     message: "La compra de inventario requiere producto y cantidad.",
     path: ["inventoryItemId"],
   });
-import {
-  ObjectStorageService,
-  ObjectNotFoundError,
-} from "./objectStorage.js";
-import { ObjectPermission } from "./objectAcl.js";
 
-// Clinic timezone anchors revenue periods (matches server/storage.ts).
-const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
-
-// Human-readable Spanish label for a revenue period, in the clinic timezone.
-function buildRevenueLabel(
-  period: string,
-  range: { start: Date; end: Date },
-  timeZone: string,
-): string {
-  const lastDay = new Date(range.end.getTime() - 1); // end is exclusive
-  const day = (d: Date) =>
-    new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short" }).format(d);
-  const dayYear = (d: Date) =>
-    new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short", year: "numeric" }).format(d);
-  const monthYear = (d: Date) => {
-    const s = new Intl.DateTimeFormat("es-MX", { timeZone, month: "long", year: "numeric" }).format(d);
-    return s.charAt(0).toUpperCase() + s.slice(1);
-  };
-  switch (period) {
-    case "day":
-      return "Hoy";
-    case "week":
-      return `${day(range.start)} – ${day(lastDay)}`;
-    case "month":
-      return monthYear(range.start);
-    default:
-      return `${day(range.start)} – ${dayYear(lastDay)}`;
-  }
-}
-
-function normalizeDateOnlyFields<T extends Record<string, any>>(data: T, fields: string[]): T {
-  const normalized: Record<string, any> = { ...data };
-  for (const field of fields) {
-    if (normalized[field] === "") {
-      normalized[field] = null;
-    }
-  }
-  return normalized as T;
-}
-
-function normalizeDateTimeFields<T extends Record<string, any>>(data: T, fields: string[]): T {
-  const normalized: Record<string, any> = { ...data };
-  for (const field of fields) {
-    const value = normalized[field];
-    if (value === "") {
-      normalized[field] = null;
-    } else if (typeof value === "string") {
-      normalized[field] = new Date(value);
-    }
-  }
-  return normalized as T;
-}
-
-// Invoice creation: totals are computed server-side from these line items,
-// never taken from the client (financial integrity). `.strict()` rejects any
-// client-sent amount fields (subtotal/taxAmount/totalAmount).
 const createInvoiceRequestSchema = z.object({
   ownerId: z.string().min(1),
   patientId: z.string().min(1).optional().nullable(),
@@ -113,160 +61,151 @@ const createInvoiceRequestSchema = z.object({
   dueDate: z.coerce.date().optional().nullable(),
   notes: z.string().optional().nullable(),
   taxRate: z.number().min(0).max(1).optional(),
-  // Collect on the spot: mark the new invoice paid with its method.
   markPaid: z.boolean().optional(),
   paymentMethod: paymentMethodEnum.optional().nullable(),
-  items: z
-    .array(
-      z.object({
-        description: z.string().min(1),
-        quantity: z.number().int().positive(),
-        unitPrice: z.number().nonnegative(),
-        treatmentId: z.string().min(1).optional().nullable(),
-        inventoryItemId: z.string().min(1).optional().nullable(),
-      })
-    )
-    .min(1)
-    .max(100),
+  items: z.array(z.object({
+    description: z.string().min(1),
+    quantity: z.number().int().positive(),
+    unitPrice: z.number().nonnegative(),
+    treatmentId: z.string().min(1).optional().nullable(),
+    inventoryItemId: z.string().min(1).optional().nullable(),
+  })).min(1).max(100),
 }).strict()
   .refine((d) => !d.markPaid || !!d.paymentMethod, {
     message: "Indica el método de pago al cobrar.",
     path: ["paymentMethod"],
   });
 
+// Centralized fail-closed error mapping. Cross-tenant ids are reported as 404 so
+// they are indistinguishable from "not found" (no existence leak).
+function sendError(res: Response, error: unknown, context: string) {
+  if (error instanceof z.ZodError) {
+    return res.status(400).json({ message: "Validation error", errors: error.errors });
+  }
+  if (error instanceof TenantError) {
+    return res.status(error.status).json({ message: error.message, code: error.code });
+  }
+  if (error instanceof CrossTenantError) {
+    return res.status(404).json({ message: "Recurso no encontrado", code: error.code });
+  }
+  if (error instanceof Error) {
+    if (error.message === "APPOINTMENT_ALREADY_INVOICED") {
+      return res.status(409).json({ message: "This appointment already has an invoice" });
+    }
+    if (error.message.startsWith("INSUFFICIENT_STOCK:")) {
+      return res.status(409).json({ message: "No hay stock suficiente para uno de los productos.", code: "INSUFFICIENT_STOCK", inventoryItemId: error.message.split(":")[1] });
+    }
+  }
+  console.error(`Error ${context}:`, error);
+  return res.status(500).json({ message: `Failed: ${context}` });
+}
+
+// In-handler fail-closed privileged-role gate (throws TenantError → sendError).
+function assertPrivileged(req: any) {
+  requireTenantRole(getTenant(req), PRIVILEGED_ROLES);
+}
+
+function normalizeDateOnlyFields<T extends Record<string, any>>(data: T, fields: string[]): T {
+  const normalized: Record<string, any> = { ...data };
+  for (const field of fields) if (normalized[field] === "") normalized[field] = null;
+  return normalized as T;
+}
+
+function normalizeDateTimeFields<T extends Record<string, any>>(data: T, fields: string[]): T {
+  const normalized: Record<string, any> = { ...data };
+  for (const field of fields) {
+    const value = normalized[field];
+    if (value === "") normalized[field] = null;
+    else if (typeof value === "string") normalized[field] = new Date(value);
+  }
+  return normalized as T;
+}
+
+function buildRevenueLabel(period: string, range: { start: Date; end: Date }, timeZone: string): string {
+  const lastDay = new Date(range.end.getTime() - 1);
+  const day = (d: Date) => new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short" }).format(d);
+  const dayYear = (d: Date) => new Intl.DateTimeFormat("es-MX", { timeZone, day: "numeric", month: "short", year: "numeric" }).format(d);
+  const monthYear = (d: Date) => {
+    const s = new Intl.DateTimeFormat("es-MX", { timeZone, month: "long", year: "numeric" }).format(d);
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+  switch (period) {
+    case "day": return "Hoy";
+    case "week": return `${day(range.start)} – ${day(lastDay)}`;
+    case "month": return monthYear(range.start);
+    default: return `${day(range.start)} – ${dayYear(lastDay)}`;
+  }
+}
+
+function resolveRange(req: any): { start: Date; end: Date } | { error: string } {
+  const now = new Date();
+  const period = String(req.query.period ?? "month");
+  const fromQ = req.query.from ? String(req.query.from) : undefined;
+  const toQ = req.query.to ? String(req.query.to) : undefined;
+  if (fromQ || toQ) {
+    if (!fromQ || !toQ) return { error: "Indica ambas fechas: from y to." };
+    const r = getRangeFromDayStringsInTimeZone(fromQ, toQ, CLINIC_TIMEZONE);
+    return r ?? { error: "Rango de fechas inválido." };
+  }
+  if (period === "day") return getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
+  if (period === "week") return getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
+  if (period === "month") return getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
+  return { error: "Periodo inválido. Usa day, week, month o from/to." };
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth middleware
   await setupAuth(app);
 
-  // Auth routes  
+  // Auth: current user (global identity — no tenant needed).
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
+      const user = await storage.getUser(req.user.claims.sub);
       res.json(user);
-    } catch (error) {
-      console.error("Error fetching user:", error);
-      res.status(500).json({ message: "Failed to fetch user" });
-    }
+    } catch (error) { sendError(res, error, "fetch user"); }
   });
 
-  // Dashboard routes
-  app.get("/api/dashboard/stats", isAuthenticated, async (req, res) => {
-    try {
-      const stats = await storage.getDashboardStats();
-      res.json(stats);
-    } catch (error) {
-      console.error("Error fetching dashboard stats:", error);
-      res.status(500).json({ message: "Failed to fetch dashboard stats" });
-    }
+  // --- Dashboard (tenant-scoped) ---
+  app.get("/api/dashboard/stats", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getDashboardStats(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch dashboard stats"); }
   });
 
-  app.get("/api/dashboard/today-appointments", isAuthenticated, async (req, res) => {
-    try {
-      const appointments = await storage.getTodayAppointments();
-      res.json(appointments);
-    } catch (error) {
-      console.error("Error fetching today's appointments:", error);
-      res.status(500).json({ message: "Failed to fetch today's appointments" });
-    }
+  app.get("/api/dashboard/today-appointments", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getTodayAppointments(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch today's appointments"); }
   });
 
-  app.get("/api/dashboard/recent-activity", isAuthenticated, async (req, res) => {
-    try {
-      const activity = await storage.getRecentActivity();
-      res.json(activity);
-    } catch (error) {
-      console.error("Error fetching recent activity:", error);
-      res.status(500).json({ message: "Failed to fetch recent activity" });
-    }
+  app.get("/api/dashboard/recent-activity", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getRecentActivity(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch recent activity"); }
   });
 
-  // Paid revenue for a period: ?period=day|week|month (anchored to the clinic
-  // timezone) or ?from=YYYY-MM-DD&to=YYYY-MM-DD for a custom inclusive range.
-  app.get("/api/dashboard/revenue", isAuthenticated, async (req, res) => {
-    try {
-      const now = new Date();
-      const period = String(req.query.period ?? "month");
-      const fromQ = req.query.from ? String(req.query.from) : undefined;
-      const toQ = req.query.to ? String(req.query.to) : undefined;
-
-      let range: { start: Date; end: Date } | null;
-      let resolvedPeriod = period;
-
-      if (fromQ || toQ) {
-        if (!fromQ || !toQ) {
-          return res.status(400).json({ message: "Indica ambas fechas: from y to." });
-        }
-        range = getRangeFromDayStringsInTimeZone(fromQ, toQ, CLINIC_TIMEZONE);
-        resolvedPeriod = "custom";
-        if (!range) {
-          return res.status(400).json({ message: "Rango de fechas inválido." });
-        }
-      } else if (period === "day") {
-        range = getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
-      } else if (period === "week") {
-        range = getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
-      } else if (period === "month") {
-        range = getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
-      } else {
-        return res.status(400).json({ message: "Periodo inválido. Usa day, week, month o from/to." });
-      }
-
-      const [total, byMethod] = await Promise.all([
-        storage.getRevenueBetween(range.start, range.end),
-        storage.getRevenueByMethodBetween(range.start, range.end),
-      ]);
-      res.json({
-        period: resolvedPeriod,
-        from: range.start.toISOString(),
-        to: range.end.toISOString(),
-        total,
-        byMethod,
-        label: buildRevenueLabel(resolvedPeriod, range, CLINIC_TIMEZONE),
-      });
-    } catch (error) {
-      console.error("Error fetching revenue:", error);
-      res.status(500).json({ message: "Failed to fetch revenue" });
-    }
-  });
-
-  // Resolve a ?period=day|week|month or ?from&to query into a [start,end) range.
-  function resolveRange(req: any): { start: Date; end: Date } | { error: string } {
-    const now = new Date();
-    const period = String(req.query.period ?? "month");
-    const fromQ = req.query.from ? String(req.query.from) : undefined;
-    const toQ = req.query.to ? String(req.query.to) : undefined;
-    if (fromQ || toQ) {
-      if (!fromQ || !toQ) return { error: "Indica ambas fechas: from y to." };
-      const r = getRangeFromDayStringsInTimeZone(fromQ, toQ, CLINIC_TIMEZONE);
-      return r ?? { error: "Rango de fechas inválido." };
-    }
-    if (period === "day") return getDayRangeInTimeZone(now, CLINIC_TIMEZONE);
-    if (period === "week") return getWeekRangeInTimeZone(now, CLINIC_TIMEZONE);
-    if (period === "month") return getMonthRangeInTimeZone(now, CLINIC_TIMEZONE);
-    return { error: "Periodo inválido. Usa day, week, month o from/to." };
-  }
-
-  // Expense summary for a period: total, business/personal split, by category, by method.
-  app.get("/api/dashboard/expenses", isAuthenticated, async (req, res) => {
+  app.get("/api/dashboard/revenue", isAuthenticated, withTenant, async (req, res) => {
     try {
       const range = resolveRange(req);
       if ("error" in range) return res.status(400).json({ message: range.error });
-      const summary = await storage.getExpenseSummaryBetween(range.start, range.end);
-      res.json({
-        from: range.start.toISOString(),
-        to: range.end.toISOString(),
-        label: buildRevenueLabel(String(req.query.period ?? (req.query.from ? "custom" : "month")), range, CLINIC_TIMEZONE),
-        ...summary,
-      });
-    } catch (error) {
-      console.error("Error fetching expense summary:", error);
-      res.status(500).json({ message: "Failed to fetch expense summary" });
-    }
+      const ctx = getTenant(req);
+      const [total, byMethod] = await Promise.all([
+        storage.getRevenueBetween(ctx, range.start, range.end),
+        storage.getRevenueByMethodBetween(ctx, range.start, range.end),
+      ]);
+      const period = String(req.query.period ?? (req.query.from ? "custom" : "month"));
+      res.json({ period, from: range.start.toISOString(), to: range.end.toISOString(), total, byMethod, label: buildRevenueLabel(period, range, CLINIC_TIMEZONE) });
+    } catch (error) { sendError(res, error, "fetch revenue"); }
   });
 
-  // Expense CRUD
-  app.get("/api/expenses", isAuthenticated, async (req, res) => {
+  app.get("/api/dashboard/expenses", isAuthenticated, withTenant, async (req, res) => {
+    try {
+      const range = resolveRange(req);
+      if ("error" in range) return res.status(400).json({ message: range.error });
+      const summary = await storage.getExpenseSummaryBetween(getTenant(req), range.start, range.end);
+      const period = String(req.query.period ?? (req.query.from ? "custom" : "month"));
+      res.json({ from: range.start.toISOString(), to: range.end.toISOString(), label: buildRevenueLabel(period, range, CLINIC_TIMEZONE), ...summary });
+    } catch (error) { sendError(res, error, "fetch expense summary"); }
+  });
+
+  // --- Expenses ---
+  app.get("/api/expenses", isAuthenticated, withTenant, async (req, res) => {
     try {
       let range: { start: Date; end: Date } | undefined;
       if (req.query.from || req.query.to || req.query.period) {
@@ -274,609 +213,339 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if ("error" in r) return res.status(400).json({ message: r.error });
         range = r;
       }
-      const list = await storage.getExpenses(range);
-      res.json(list);
-    } catch (error) {
-      console.error("Error fetching expenses:", error);
-      res.status(500).json({ message: "Failed to fetch expenses" });
-    }
+      res.json(await storage.getExpenses(getTenant(req), range));
+    } catch (error) { sendError(res, error, "fetch expenses"); }
   });
 
-  app.post("/api/expenses", isAuthenticated, async (req, res) => {
+  app.post("/api/expenses", isAuthenticated, withTenant, async (req, res) => {
     try {
       const data = createExpenseRequestSchema.parse(req.body);
-      const expense = await storage.createExpense(data);
-      res.status(201).json(expense);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      if (error instanceof Error && error.message.startsWith("INVENTORY_ITEM_NOT_FOUND:")) {
-        return res.status(400).json({ message: "Producto de inventario no encontrado." });
-      }
-      console.error("Error creating expense:", error);
-      res.status(500).json({ message: "Failed to create expense" });
-    }
+      res.status(201).json(await storage.createExpense(getTenant(req), data));
+    } catch (error) { sendError(res, error, "create expense"); }
   });
 
-  app.delete("/api/expenses/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.delete("/api/expenses/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      await storage.deleteExpense(req.params.id);
+      assertPrivileged(req);
+      await storage.deleteExpense(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting expense:", error);
-      res.status(500).json({ message: "Failed to delete expense" });
-    }
+    } catch (error) { sendError(res, error, "delete expense"); }
   });
 
-  // Owner routes
-  app.get("/api/owners", isAuthenticated, async (req, res) => {
-    try {
-      const owners = await storage.getOwners();
-      res.json(owners);
-    } catch (error) {
-      console.error("Error fetching owners:", error);
-      res.status(500).json({ message: "Failed to fetch owners" });
-    }
+  // --- Owners ---
+  app.get("/api/owners", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getOwners(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch owners"); }
   });
 
-  // Walk-in ("Público General") customer for counter sales. Get-or-create.
-  app.get("/api/public-owner", isAuthenticated, async (_req, res) => {
+  app.get("/api/public-owner", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getOrCreatePublicOwner(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch public owner"); }
+  });
+
+  app.get("/api/owners/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const owner = await storage.getOrCreatePublicOwner();
+      const owner = await storage.getOwner(getTenant(req), req.params.id);
+      if (!owner) return res.status(404).json({ message: "Owner not found" });
       res.json(owner);
-    } catch (error) {
-      console.error("Error fetching public owner:", error);
-      res.status(500).json({ message: "Failed to fetch public owner" });
-    }
+    } catch (error) { sendError(res, error, "fetch owner"); }
   });
 
-  app.get("/api/owners/:id", isAuthenticated, async (req, res) => {
+  app.post("/api/owners", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const owner = await storage.getOwner(req.params.id);
-      if (!owner) {
-        return res.status(404).json({ message: "Owner not found" });
-      }
+      const validated = insertOwnerSchema.parse(req.body);
+      res.status(201).json(await storage.createOwner(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create owner"); }
+  });
+
+  app.put("/api/owners/:id", isAuthenticated, withTenant, async (req, res) => {
+    try {
+      const validated = insertOwnerSchema.partial().parse(req.body);
+      const owner = await storage.updateOwner(getTenant(req), req.params.id, validated);
+      if (!owner) return res.status(404).json({ message: "Owner not found" });
       res.json(owner);
-    } catch (error) {
-      console.error("Error fetching owner:", error);
-      res.status(500).json({ message: "Failed to fetch owner" });
-    }
+    } catch (error) { sendError(res, error, "update owner"); }
   });
 
-  app.post("/api/owners", isAuthenticated, async (req, res) => {
+  app.delete("/api/owners/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertOwnerSchema.parse(req.body);
-      const owner = await storage.createOwner(validatedData);
-      res.status(201).json(owner);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating owner:", error);
-      res.status(500).json({ message: "Failed to create owner" });
-    }
-  });
-
-  app.put("/api/owners/:id", isAuthenticated, async (req, res) => {
-    try {
-      const validatedData = insertOwnerSchema.partial().parse(req.body);
-      const owner = await storage.updateOwner(req.params.id, validatedData);
-      res.json(owner);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating owner:", error);
-      res.status(500).json({ message: "Failed to update owner" });
-    }
-  });
-
-  app.delete("/api/owners/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
-    try {
-      await storage.deleteOwner(req.params.id);
+      assertPrivileged(req);
+      await storage.deleteOwner(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting owner:", error);
-      res.status(500).json({ message: "Failed to delete owner" });
-    }
+    } catch (error) { sendError(res, error, "delete owner"); }
   });
 
-  // Patient routes
-  app.get("/api/patients", isAuthenticated, async (req, res) => {
-    try {
-      const patients = await storage.getPatients();
-      res.json(patients);
-    } catch (error) {
-      console.error("Error fetching patients:", error);
-      res.status(500).json({ message: "Failed to fetch patients" });
-    }
+  // --- Patients ---
+  app.get("/api/patients", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getPatients(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch patients"); }
   });
 
-  app.get("/api/patients/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/patients/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const patient = await storage.getPatient(req.params.id);
-      if (!patient) {
-        return res.status(404).json({ message: "Patient not found" });
-      }
+      const patient = await storage.getPatient(getTenant(req), req.params.id);
+      if (!patient) return res.status(404).json({ message: "Patient not found" });
       res.json(patient);
-    } catch (error) {
-      console.error("Error fetching patient:", error);
-      res.status(500).json({ message: "Failed to fetch patient" });
-    }
+    } catch (error) { sendError(res, error, "fetch patient"); }
   });
 
-  app.get("/api/owners/:ownerId/patients", isAuthenticated, async (req, res) => {
-    try {
-      const patients = await storage.getPatientsByOwner(req.params.ownerId);
-      res.json(patients);
-    } catch (error) {
-      console.error("Error fetching owner's patients:", error);
-      res.status(500).json({ message: "Failed to fetch owner's patients" });
-    }
+  app.get("/api/owners/:ownerId/patients", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getPatientsByOwner(getTenant(req), req.params.ownerId)); }
+    catch (error) { sendError(res, error, "fetch owner's patients"); }
   });
 
-  app.post("/api/patients", isAuthenticated, async (req, res) => {
+  app.post("/api/patients", isAuthenticated, withTenant, async (req, res) => {
     try {
       const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
-      const validatedData = insertPatientSchema.parse(payload);
-      const patient = await storage.createPatient(validatedData);
-      res.status(201).json(patient);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating patient:", error);
-      res.status(500).json({ message: "Failed to create patient" });
-    }
+      const validated = insertPatientSchema.parse(payload);
+      res.status(201).json(await storage.createPatient(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create patient"); }
   });
 
-  app.put("/api/patients/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/patients/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
       const payload = normalizeDateOnlyFields(req.body, ["birthDate"]);
-      const validatedData = insertPatientSchema.partial().parse(payload);
-      // Never overwrite a FK field with an empty string — ignore it so the
-      // existing value is preserved (happens when photo-save triggers a partial update)
-      if (!validatedData.ownerId) delete (validatedData as any).ownerId;
-      const patient = await storage.updatePatient(req.params.id, validatedData);
+      const validated = insertPatientSchema.partial().parse(payload);
+      if (!validated.ownerId) delete (validated as any).ownerId;
+      const patient = await storage.updatePatient(getTenant(req), req.params.id, validated);
+      if (!patient) return res.status(404).json({ message: "Patient not found" });
       res.json(patient);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating patient:", error);
-      res.status(500).json({ message: "Failed to update patient" });
-    }
+    } catch (error) { sendError(res, error, "update patient"); }
   });
 
-  app.delete("/api/patients/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.delete("/api/patients/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      await storage.deletePatient(req.params.id);
+      assertPrivileged(req);
+      await storage.deletePatient(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting patient:", error);
-      res.status(500).json({ message: "Failed to delete patient" });
-    }
+    } catch (error) { sendError(res, error, "delete patient"); }
   });
 
-  // Appointment routes
-  app.get("/api/appointments", isAuthenticated, async (req, res) => {
-    try {
-      const appointments = await storage.getAppointments();
-      res.json(appointments);
-    } catch (error) {
-      console.error("Error fetching appointments:", error);
-      res.status(500).json({ message: "Failed to fetch appointments" });
-    }
+  // --- Appointments ---
+  const appointmentCoercedSchema = insertAppointmentSchema.extend({ appointmentDate: z.coerce.date() });
+
+  app.get("/api/appointments", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getAppointments(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch appointments"); }
   });
 
-  app.get("/api/appointments/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/appointments/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const appointment = await storage.getAppointment(req.params.id);
-      if (!appointment) {
-        return res.status(404).json({ message: "Appointment not found" });
-      }
+      const appointment = await storage.getAppointment(getTenant(req), req.params.id);
+      if (!appointment) return res.status(404).json({ message: "Appointment not found" });
       res.json(appointment);
-    } catch (error) {
-      console.error("Error fetching appointment:", error);
-      res.status(500).json({ message: "Failed to fetch appointment" });
-    }
+    } catch (error) { sendError(res, error, "fetch appointment"); }
   });
 
-  // Schema that coerces appointmentDate from ISO string or Date
-  const appointmentCoercedSchema = insertAppointmentSchema.extend({
-    appointmentDate: z.coerce.date(),
-  });
-
-  app.post("/api/appointments", isAuthenticated, async (req, res) => {
+  app.post("/api/appointments", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = appointmentCoercedSchema.parse(req.body);
-      const appointment = await storage.createAppointment(validatedData);
-      res.status(201).json(appointment);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        console.error("Appointment validation error:", JSON.stringify(error.errors));
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating appointment:", error);
-      res.status(500).json({ message: "Failed to create appointment" });
-    }
+      const validated = appointmentCoercedSchema.parse(req.body);
+      res.status(201).json(await storage.createAppointment(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create appointment"); }
   });
 
-  app.put("/api/appointments/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/appointments/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = appointmentCoercedSchema.partial().parse(req.body);
-      const appointment = await storage.updateAppointment(req.params.id, validatedData);
+      const validated = appointmentCoercedSchema.partial().parse(req.body);
+      const appointment = await storage.updateAppointment(getTenant(req), req.params.id, validated);
+      if (!appointment) return res.status(404).json({ message: "Appointment not found" });
       res.json(appointment);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating appointment:", error);
-      res.status(500).json({ message: "Failed to update appointment" });
-    }
+    } catch (error) { sendError(res, error, "update appointment"); }
   });
 
-  app.delete("/api/appointments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.delete("/api/appointments/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      await storage.deleteAppointment(req.params.id);
+      assertPrivileged(req);
+      await storage.deleteAppointment(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting appointment:", error);
-      res.status(500).json({ message: "Failed to delete appointment" });
-    }
+    } catch (error) { sendError(res, error, "delete appointment"); }
   });
 
-  // Medical record routes
-  app.get("/api/medical-records", isAuthenticated, async (req, res) => {
-    try {
-      const records = await storage.getMedicalRecords();
-      res.json(records);
-    } catch (error) {
-      console.error("Error fetching medical records:", error);
-      res.status(500).json({ message: "Failed to fetch medical records" });
-    }
+  // --- Medical records ---
+  app.get("/api/medical-records", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getMedicalRecords(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch medical records"); }
   });
 
-  app.get("/api/patients/:patientId/medical-records", isAuthenticated, async (req, res) => {
-    try {
-      const records = await storage.getPatientMedicalRecords(req.params.patientId);
-      res.json(records);
-    } catch (error) {
-      console.error("Error fetching patient medical records:", error);
-      res.status(500).json({ message: "Failed to fetch patient medical records" });
-    }
+  app.get("/api/patients/:patientId/medical-records", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getPatientMedicalRecords(getTenant(req), req.params.patientId)); }
+    catch (error) { sendError(res, error, "fetch patient medical records"); }
   });
 
-  app.post("/api/medical-records", isAuthenticated, async (req, res) => {
+  app.post("/api/medical-records", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertMedicalRecordSchema.parse(req.body);
-      const record = await storage.createMedicalRecord(validatedData);
-      res.status(201).json(record);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating medical record:", error);
-      res.status(500).json({ message: "Failed to create medical record" });
-    }
+      const validated = insertMedicalRecordSchema.parse(req.body);
+      // Author is derived server-side inside storage (SEC-GAP-03), never trusted from client.
+      res.status(201).json(await storage.createMedicalRecord(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create medical record"); }
   });
 
-  // Treatment routes
-  app.get("/api/treatments", isAuthenticated, async (req, res) => {
-    try {
-      const treatments = await storage.getTreatments();
-      res.json(treatments);
-    } catch (error) {
-      console.error("Error fetching treatments:", error);
-      res.status(500).json({ message: "Failed to fetch treatments" });
-    }
+  // --- Treatments ---
+  app.get("/api/treatments", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getTreatments(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch treatments"); }
   });
 
-  app.post("/api/treatments", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.post("/api/treatments", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertTreatmentSchema.parse(req.body);
-      const treatment = await storage.createTreatment(validatedData);
-      res.status(201).json(treatment);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating treatment:", error);
-      res.status(500).json({ message: "Failed to create treatment" });
-    }
+      assertPrivileged(req);
+      const validated = insertTreatmentSchema.parse(req.body);
+      res.status(201).json(await storage.createTreatment(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create treatment"); }
   });
 
-  app.put("/api/treatments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.put("/api/treatments/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertTreatmentSchema.partial().parse(req.body);
-      const treatment = await storage.updateTreatment(req.params.id, validatedData);
+      assertPrivileged(req);
+      const validated = insertTreatmentSchema.partial().parse(req.body);
+      const treatment = await storage.updateTreatment(getTenant(req), req.params.id, validated);
+      if (!treatment) return res.status(404).json({ message: "Treatment not found" });
       res.json(treatment);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating treatment:", error);
-      res.status(500).json({ message: "Failed to update treatment" });
-    }
+    } catch (error) { sendError(res, error, "update treatment"); }
   });
 
-  app.delete("/api/treatments/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.delete("/api/treatments/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      await storage.deleteTreatment(req.params.id);
+      assertPrivileged(req);
+      await storage.deleteTreatment(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting treatment:", error);
-      res.status(500).json({ message: "Failed to delete treatment" });
-    }
+    } catch (error) { sendError(res, error, "delete treatment"); }
   });
 
-  // Invoice routes
-  app.get("/api/invoices", isAuthenticated, async (req, res) => {
-    try {
-      const invoices = await storage.getInvoices();
-      res.json(invoices);
-    } catch (error) {
-      console.error("Error fetching invoices:", error);
-      res.status(500).json({ message: "Failed to fetch invoices" });
-    }
+  // --- Invoices ---
+  app.get("/api/invoices", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getInvoices(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch invoices"); }
   });
 
-  app.get("/api/invoices/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/invoices/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const invoice = await storage.getInvoice(req.params.id);
-      if (!invoice) {
-        return res.status(404).json({ message: "Invoice not found" });
-      }
+      const invoice = await storage.getInvoice(getTenant(req), req.params.id);
+      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
       res.json(invoice);
-    } catch (error) {
-      console.error("Error fetching invoice:", error);
-      res.status(500).json({ message: "Failed to fetch invoice" });
-    }
+    } catch (error) { sendError(res, error, "fetch invoice"); }
   });
 
-  app.post("/api/invoices", isAuthenticated, async (req, res) => {
+  app.post("/api/invoices", isAuthenticated, withTenant, async (req, res) => {
     try {
+      const ctx = getTenant(req);
       const data = createInvoiceRequestSchema.parse(req.body);
       if (data.appointmentId) {
-        const existingInvoice = await storage.getInvoiceByAppointment(data.appointmentId);
-        if (existingInvoice) {
-          return res.status(409).json({
-            message: "This appointment already has an invoice",
-            invoice: existingInvoice,
-          });
-        }
+        const existing = await storage.getInvoiceByAppointment(ctx, data.appointmentId);
+        if (existing) return res.status(409).json({ message: "This appointment already has an invoice", invoice: existing });
       }
-      const invoice = await storage.createInvoiceWithItems(data);
-      res.status(201).json(invoice);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      if (error instanceof Error && error.message === "APPOINTMENT_ALREADY_INVOICED") {
-        return res.status(409).json({ message: "This appointment already has an invoice" });
-      }
-      if (error instanceof Error && error.message.startsWith("INSUFFICIENT_STOCK:")) {
-        const inventoryItemId = error.message.split(":")[1];
-        return res.status(409).json({
-          message: "No hay stock suficiente para uno de los productos.",
-          code: "INSUFFICIENT_STOCK",
-          inventoryItemId,
-        });
-      }
-      if (error instanceof Error && error.message.startsWith("INVENTORY_ITEM_NOT_FOUND:")) {
-        return res.status(400).json({ message: "Producto de inventario no encontrado." });
-      }
-      console.error("Error creating invoice:", error);
-      res.status(500).json({ message: "Failed to create invoice" });
-    }
+      res.status(201).json(await storage.createInvoiceWithItems(ctx, data));
+    } catch (error) { sendError(res, error, "create invoice"); }
   });
 
-  app.put("/api/invoices/:id", isAuthenticated, async (req, res) => {
+  app.put("/api/invoices/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
       const payload = normalizeDateTimeFields(req.body, ["issueDate", "dueDate", "paymentDate"]);
-      const validatedData = insertInvoiceSchema.partial().parse(payload);
-
-      // Validate the payment method and require it when marking the invoice paid.
-      if (validatedData.paymentMethod != null) {
-        const method = paymentMethodEnum.safeParse(validatedData.paymentMethod);
-        if (!method.success) {
-          return res.status(400).json({ message: "Método de pago inválido." });
-        }
+      const validated = insertInvoiceSchema.partial().parse(payload);
+      if (validated.paymentMethod != null && !paymentMethodEnum.safeParse(validated.paymentMethod).success) {
+        return res.status(400).json({ message: "Método de pago inválido." });
       }
-      if (validatedData.status === "paid" && !validatedData.paymentMethod) {
+      if (validated.status === "paid" && !validated.paymentMethod) {
         return res.status(400).json({ message: "Indica el método de pago al marcar la factura como pagada." });
       }
-
-      const invoice = await storage.updateInvoice(req.params.id, validatedData);
+      const invoice = await storage.updateInvoice(getTenant(req), req.params.id, validated);
+      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
       res.json(invoice);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating invoice:", error);
-      res.status(500).json({ message: "Failed to update invoice" });
-    }
+    } catch (error) { sendError(res, error, "update invoice"); }
   });
 
-  app.post("/api/invoices/:id/items", isAuthenticated, async (req, res) => {
+  app.delete("/api/invoices/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertInvoiceItemSchema.parse({
-        ...req.body,
-        invoiceId: req.params.id
-      });
-      const item = await storage.addInvoiceItem(validatedData);
-      res.status(201).json(item);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error adding invoice item:", error);
-      res.status(500).json({ message: "Failed to add invoice item" });
-    }
-  });
-
-  app.delete("/api/invoices/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
-    try {
-      const invoice = await storage.getInvoice(req.params.id);
-      if (!invoice) {
-        return res.status(404).json({ message: "Invoice not found" });
-      }
-      await storage.deleteInvoice(req.params.id);
+      assertPrivileged(req);
+      const ctx = getTenant(req);
+      const invoice = await storage.getInvoice(ctx, req.params.id);
+      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+      await storage.deleteInvoice(ctx, req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting invoice:", error);
-      res.status(500).json({ message: "Failed to delete invoice" });
-    }
+    } catch (error) { sendError(res, error, "delete invoice"); }
   });
 
-  // Inventory routes
-  app.get("/api/inventory", isAuthenticated, async (req, res) => {
-    try {
-      const items = await storage.getInventoryItems();
-      res.json(items);
-    } catch (error) {
-      console.error("Error fetching inventory items:", error);
-      res.status(500).json({ message: "Failed to fetch inventory items" });
-    }
+  // --- Inventory ---
+  app.get("/api/inventory", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getInventoryItems(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch inventory"); }
   });
 
-  app.get("/api/inventory/low-stock", isAuthenticated, async (req, res) => {
-    try {
-      const items = await storage.getLowStockItems();
-      res.json(items);
-    } catch (error) {
-      console.error("Error fetching low stock items:", error);
-      res.status(500).json({ message: "Failed to fetch low stock items" });
-    }
+  app.get("/api/inventory/low-stock", isAuthenticated, withTenant, async (req, res) => {
+    try { res.json(await storage.getLowStockItems(getTenant(req))); }
+    catch (error) { sendError(res, error, "fetch low stock"); }
   });
 
-  app.post("/api/inventory", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.post("/api/inventory", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertInventoryItemSchema.parse(req.body);
-      const item = await storage.createInventoryItem(validatedData);
-      res.status(201).json(item);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error creating inventory item:", error);
-      res.status(500).json({ message: "Failed to create inventory item" });
-    }
+      assertPrivileged(req);
+      const validated = insertInventoryItemSchema.parse(req.body);
+      res.status(201).json(await storage.createInventoryItem(getTenant(req), validated));
+    } catch (error) { sendError(res, error, "create inventory item"); }
   });
 
-  app.put("/api/inventory/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.put("/api/inventory/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      const validatedData = insertInventoryItemSchema.partial().parse(req.body);
-      const item = await storage.updateInventoryItem(req.params.id, validatedData);
+      assertPrivileged(req);
+      const validated = insertInventoryItemSchema.partial().parse(req.body);
+      const item = await storage.updateInventoryItem(getTenant(req), req.params.id, validated);
+      if (!item) return res.status(404).json({ message: "Inventory item not found" });
       res.json(item);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Validation error", errors: error.errors });
-      }
-      console.error("Error updating inventory item:", error);
-      res.status(500).json({ message: "Failed to update inventory item" });
-    }
+    } catch (error) { sendError(res, error, "update inventory item"); }
   });
 
-  app.delete("/api/inventory/:id", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.delete("/api/inventory/:id", isAuthenticated, withTenant, async (req, res) => {
     try {
-      await storage.deleteInventoryItem(req.params.id);
+      assertPrivileged(req);
+      await storage.deleteInventoryItem(getTenant(req), req.params.id);
       res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting inventory item:", error);
-      res.status(500).json({ message: "Failed to delete inventory item" });
-    }
+    } catch (error) { sendError(res, error, "delete inventory item"); }
   });
 
-  // Object storage routes for photos
+  // --- Object storage (per-user ACL; not tenant-owned domain data) ---
   app.get("/objects/:objectPath(*)", isAuthenticated, async (req, res) => {
     const userId = (req.user as any)?.claims?.sub;
     const objectStorageService = new ObjectStorageService();
     try {
-      const objectFile = await objectStorageService.getObjectEntityFile(
-        req.path,
-      );
-      const canAccess = await objectStorageService.canAccessObjectEntity({
-        objectFile,
-        userId: userId,
-        requestedPermission: ObjectPermission.READ,
-      });
-      if (!canAccess) {
-        return res.sendStatus(401);
-      }
+      const objectFile = await objectStorageService.getObjectEntityFile(req.path);
+      const canAccess = await objectStorageService.canAccessObjectEntity({ objectFile, userId, requestedPermission: ObjectPermission.READ });
+      if (!canAccess) return res.sendStatus(401);
       objectStorageService.downloadObject(objectFile, res);
     } catch (error) {
       console.error("Error checking object access:", error);
-      if (error instanceof ObjectNotFoundError) {
-        return res.sendStatus(404);
-      }
+      if (error instanceof ObjectNotFoundError) return res.sendStatus(404);
       return res.sendStatus(500);
     }
   });
 
-  app.post("/api/objects/upload", isAuthenticated, async (req, res) => {
+  app.post("/api/objects/upload", isAuthenticated, async (_req, res) => {
     const objectStorageService = new ObjectStorageService();
     const uploadURL = await objectStorageService.getObjectEntityUploadURL();
     res.json({ uploadURL });
   });
 
-  app.put("/api/patient-photos", isAuthenticated, async (req, res) => {
-    if (!req.body.patientId || !req.body.photoURL) {
-      return res.status(400).json({ error: "patientId and photoURL are required" });
-    }
-
+  app.put("/api/patient-photos", isAuthenticated, withTenant, async (req, res) => {
+    if (!req.body.patientId || !req.body.photoURL) return res.status(400).json({ error: "patientId and photoURL are required" });
     const userId = (req.user as any)?.claims?.sub;
-
     try {
       const objectStorageService = new ObjectStorageService();
-      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
-        req.body.photoURL,
-        {
-          owner: userId,
-          visibility: "private", // Patient photos should be private
-        },
-      );
-
-      // Update patient with photo path
-      await storage.updatePatient(req.body.patientId, { photoUrl: objectPath });
-
-      res.status(200).json({
-        objectPath: objectPath,
-      });
-    } catch (error) {
-      console.error("Error setting patient photo:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
+      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(req.body.photoURL, { owner: userId, visibility: "private" });
+      const updated = await storage.updatePatient(getTenant(req), req.body.patientId, { photoUrl: objectPath });
+      if (!updated) return res.status(404).json({ error: "Patient not found" });
+      res.status(200).json({ objectPath });
+    } catch (error) { sendError(res, error, "set patient photo"); }
   });
 
-  app.put("/api/owner-photos", isAuthenticated, async (req, res) => {
-    if (!req.body.ownerId || !req.body.photoURL) {
-      return res.status(400).json({ error: "ownerId and photoURL are required" });
-    }
-
+  app.put("/api/owner-photos", isAuthenticated, withTenant, async (req, res) => {
+    if (!req.body.ownerId || !req.body.photoURL) return res.status(400).json({ error: "ownerId and photoURL are required" });
     const userId = (req.user as any)?.claims?.sub;
-
     try {
       const objectStorageService = new ObjectStorageService();
-      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
-        req.body.photoURL,
-        {
-          owner: userId,
-          visibility: "private", // Owner photos should be private
-        },
-      );
-
-      // Update owner with photo path
-      await storage.updateOwner(req.body.ownerId, { photoUrl: objectPath });
-
-      res.status(200).json({
-        objectPath: objectPath,
-      });
-    } catch (error) {
-      console.error("Error setting owner photo:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
+      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(req.body.photoURL, { owner: userId, visibility: "private" });
+      const updated = await storage.updateOwner(getTenant(req), req.body.ownerId, { photoUrl: objectPath });
+      if (!updated) return res.status(404).json({ error: "Owner not found" });
+      res.status(200).json({ objectPath });
+    } catch (error) { sendError(res, error, "set owner photo"); }
   });
 
   const httpServer = createServer(app);
