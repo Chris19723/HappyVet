@@ -16,6 +16,9 @@ import pg from "pg";
 
 const ORG_TABLES = ["owners", "patients", "appointments", "medical_records", "treatments", "inventory_items", "invoices", "invoice_items", "expenses"];
 const BRANCH_TABLES = ["appointments", "medical_records", "inventory_items", "invoices", "invoice_items", "expenses"];
+// medical_records.branch_id is derived (from its appointment) first, then filled
+// with the default branch, so it is handled specially — not in the generic loop.
+const SIMPLE_BRANCH_TABLES = BRANCH_TABLES.filter((t) => t !== "medical_records");
 
 export async function backfill(client: pg.Client, organizationId: string, branchId: string) {
   // Validate the org/branch relationship.
@@ -27,10 +30,22 @@ export async function backfill(client: pg.Client, organizationId: string, branch
     const r = await client.query(`UPDATE ${t} SET organization_id = $1 WHERE organization_id IS NULL`, [organizationId]);
     updated[`${t}.organization_id`] = r.rowCount ?? 0;
   }
-  for (const t of BRANCH_TABLES) {
+  // Backfill the straightforward branch-scoped tables (appointments FIRST, so the
+  // medical-records derivation below can read appointment.branch_id).
+  for (const t of SIMPLE_BRANCH_TABLES) {
     const r = await client.query(`UPDATE ${t} SET branch_id = $1 WHERE branch_id IS NULL`, [branchId]);
     updated[`${t}.branch_id`] = r.rowCount ?? 0;
   }
+  // medical_records.branch_id (HQ #3): prefer the linked appointment's branch,
+  // then fall back to the default branch for records with no appointment.
+  const fromAppt = await client.query(
+    `UPDATE medical_records m SET branch_id = a.branch_id
+     FROM appointments a
+     WHERE m.appointment_id = a.id AND m.branch_id IS NULL AND a.branch_id IS NOT NULL`);
+  const fromDefault = await client.query(
+    `UPDATE medical_records SET branch_id = $1 WHERE branch_id IS NULL`, [branchId]);
+  updated["medical_records.branch_id_from_appointment"] = fromAppt.rowCount ?? 0;
+  updated["medical_records.branch_id_from_default"] = fromDefault.rowCount ?? 0;
   // Mark the legacy walk-in owner as this org's public owner.
   await client.query(
     `UPDATE owners SET is_public = true WHERE organization_id = $1 AND first_name = 'Público' AND last_name = 'General' AND (is_public IS DISTINCT FROM true)`,

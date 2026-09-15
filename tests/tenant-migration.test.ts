@@ -83,11 +83,18 @@ run("versioned migration + reconciliation (HA-FOUND-001)", () => {
     expect(after.sums.inventory_stock).toBe("7");
   });
 
-  it("no required tenant columns remain null after backfill", () => {
+  it("no required tenant columns remain null after backfill (incl. medical_records.branch_id)", () => {
     for (const [k, v] of Object.entries(after.remainingNulls)) {
-      if (k.includes("medical_records.branch_id")) continue; // branch is optional on records
-      expect(v, k).toBe(0);
+      expect(v, k).toBe(0); // medical_records.branch_id is now REQUIRED and backfilled
     }
+  });
+
+  it("derives medical_records.branch_id from the linked appointment", async () => {
+    const rows = await raw.query(`
+      SELECT m.branch_id AS m_branch, a.branch_id AS a_branch
+      FROM medical_records m JOIN appointments a ON a.id = m.appointment_id`);
+    expect(rows.rowCount).toBeGreaterThan(0);
+    for (const r of rows.rows) expect(r.m_branch).toBe(r.a_branch);
   });
 
   it("enforce migration applied cleanly and rows carry the tenant", async () => {

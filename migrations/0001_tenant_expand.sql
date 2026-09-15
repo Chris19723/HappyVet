@@ -87,19 +87,30 @@ ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "branch_id" varchar;
 ALTER TABLE "appointments" ALTER COLUMN "veterinarian_id" DROP NOT NULL;
 ALTER TABLE "medical_records" ALTER COLUMN "veterinarian_id" DROP NOT NULL;
 
--- Invoice numbers are unique PER ORGANIZATION, not globally. Drop the global
--- unique now; the composite (organization_id, invoice_number) unique is added
--- in ENFORCE once organization_id is backfilled.
-ALTER TABLE "invoices" DROP CONSTRAINT IF EXISTS "invoices_invoice_number_unique";
+-- Invoice numbers remain GLOBALLY unique (HQ HA-FOUND-001 PR #23 review #1). The
+-- pre-tenant global unique constraint "invoices_invoice_number_unique" is kept as-is.
+
+-- ---- Staff identity unique (target for the Membership↔StaffMember user FK) ----
+ALTER TABLE "staff_members" ADD CONSTRAINT "staff_members_id_user_uq" UNIQUE ("id","user_id");
+
+-- ---- Membership↔StaffMember identity FK (same user). Enforced only when
+-- ---- staff_member_id is set (MATCH SIMPLE with a nullable column). ----
+ALTER TABLE "memberships" ADD CONSTRAINT "memberships_staff_user_fk"
+  FOREIGN KEY ("staff_member_id","user_id") REFERENCES "staff_members"("id","user_id");
 
 -- ---- Composite UNIQUE keys on parent tables (FK targets). NULLs are distinct,
--- ---- so these are valid while organization_id is still being backfilled. ----
+-- ---- so these are valid while organization_id/branch_id are still being backfilled. ----
 ALTER TABLE "owners" ADD CONSTRAINT "owners_id_org_uq" UNIQUE ("id","organization_id");
 ALTER TABLE "patients" ADD CONSTRAINT "patients_id_org_uq" UNIQUE ("id","organization_id");
 ALTER TABLE "appointments" ADD CONSTRAINT "appointments_id_org_uq" UNIQUE ("id","organization_id");
 ALTER TABLE "treatments" ADD CONSTRAINT "treatments_id_org_uq" UNIQUE ("id","organization_id");
 ALTER TABLE "inventory_items" ADD CONSTRAINT "inventory_items_id_org_uq" UNIQUE ("id","organization_id");
 ALTER TABLE "invoices" ADD CONSTRAINT "invoices_id_org_uq" UNIQUE ("id","organization_id");
+
+-- ---- Triple (id, org, branch) UNIQUE keys — targets for branch-aware FKs. ----
+ALTER TABLE "appointments" ADD CONSTRAINT "appointments_id_org_branch_uq" UNIQUE ("id","organization_id","branch_id");
+ALTER TABLE "inventory_items" ADD CONSTRAINT "inventory_items_id_org_branch_uq" UNIQUE ("id","organization_id","branch_id");
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_id_org_branch_uq" UNIQUE ("id","organization_id","branch_id");
 
 -- ---- Helpful tenant indexes ----
 CREATE INDEX IF NOT EXISTS "owners_org_idx" ON "owners" ("organization_id");

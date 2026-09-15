@@ -14,8 +14,9 @@ ALTER TABLE "invoices" ALTER COLUMN "organization_id" SET NOT NULL;
 ALTER TABLE "invoice_items" ALTER COLUMN "organization_id" SET NOT NULL;
 ALTER TABLE "expenses" ALTER COLUMN "organization_id" SET NOT NULL;
 
--- ---- NOT NULL on branch_id (branch-scoped tables; medical_records stays optional) ----
+-- ---- NOT NULL on branch_id (all branch-scoped tables, medical_records included) ----
 ALTER TABLE "appointments" ALTER COLUMN "branch_id" SET NOT NULL;
+ALTER TABLE "medical_records" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "inventory_items" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "invoices" ALTER COLUMN "branch_id" SET NOT NULL;
 ALTER TABLE "invoice_items" ALTER COLUMN "branch_id" SET NOT NULL;
@@ -45,8 +46,9 @@ ALTER TABLE "appointments" ADD CONSTRAINT "appointments_staff_org_fk"
 
 ALTER TABLE "medical_records" ADD CONSTRAINT "medical_records_patient_org_fk"
   FOREIGN KEY ("patient_id","organization_id") REFERENCES "patients"("id","organization_id");
-ALTER TABLE "medical_records" ADD CONSTRAINT "medical_records_appointment_org_fk"
-  FOREIGN KEY ("appointment_id","organization_id") REFERENCES "appointments"("id","organization_id");
+-- Branch-aware: a record's appointment (when set) must share org + branch.
+ALTER TABLE "medical_records" ADD CONSTRAINT "medical_records_appointment_org_branch_fk"
+  FOREIGN KEY ("appointment_id","organization_id","branch_id") REFERENCES "appointments"("id","organization_id","branch_id");
 ALTER TABLE "medical_records" ADD CONSTRAINT "medical_records_branch_org_fk"
   FOREIGN KEY ("branch_id","organization_id") REFERENCES "branches"("id","organization_id");
 ALTER TABLE "medical_records" ADD CONSTRAINT "medical_records_staff_org_fk"
@@ -61,22 +63,27 @@ ALTER TABLE "invoices" ADD CONSTRAINT "invoices_owner_org_fk"
   FOREIGN KEY ("owner_id","organization_id") REFERENCES "owners"("id","organization_id");
 ALTER TABLE "invoices" ADD CONSTRAINT "invoices_patient_org_fk"
   FOREIGN KEY ("patient_id","organization_id") REFERENCES "patients"("id","organization_id");
-ALTER TABLE "invoices" ADD CONSTRAINT "invoices_appointment_org_fk"
-  FOREIGN KEY ("appointment_id","organization_id") REFERENCES "appointments"("id","organization_id");
+-- Branch-aware: an invoice's appointment (when set) must share org + branch.
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_appointment_org_branch_fk"
+  FOREIGN KEY ("appointment_id","organization_id","branch_id") REFERENCES "appointments"("id","organization_id","branch_id");
 
-ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_invoice_org_fk"
-  FOREIGN KEY ("invoice_id","organization_id") REFERENCES "invoices"("id","organization_id");
+-- Branch-aware: an item's invoice must share org + branch.
+ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_invoice_org_branch_fk"
+  FOREIGN KEY ("invoice_id","organization_id","branch_id") REFERENCES "invoices"("id","organization_id","branch_id");
 ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_branch_org_fk"
   FOREIGN KEY ("branch_id","organization_id") REFERENCES "branches"("id","organization_id");
 ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_treatment_org_fk"
   FOREIGN KEY ("treatment_id","organization_id") REFERENCES "treatments"("id","organization_id");
-ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_inventory_org_fk"
-  FOREIGN KEY ("inventory_item_id","organization_id") REFERENCES "inventory_items"("id","organization_id");
+-- Branch-aware: an item's inventory item (when set) must share org + branch.
+ALTER TABLE "invoice_items" ADD CONSTRAINT "invoice_items_inventory_org_branch_fk"
+  FOREIGN KEY ("inventory_item_id","organization_id","branch_id") REFERENCES "inventory_items"("id","organization_id","branch_id");
 
 ALTER TABLE "expenses" ADD CONSTRAINT "expenses_branch_org_fk"
   FOREIGN KEY ("branch_id","organization_id") REFERENCES "branches"("id","organization_id");
-ALTER TABLE "expenses" ADD CONSTRAINT "expenses_inventory_org_fk"
-  FOREIGN KEY ("inventory_item_id","organization_id") REFERENCES "inventory_items"("id","organization_id");
+-- Branch-aware: an expense's inventory item (when set) must share org + branch.
+ALTER TABLE "expenses" ADD CONSTRAINT "expenses_inventory_org_branch_fk"
+  FOREIGN KEY ("inventory_item_id","organization_id","branch_id") REFERENCES "inventory_items"("id","organization_id","branch_id");
 
--- Per-organization invoice number uniqueness (replaces the dropped global unique).
-ALTER TABLE "invoices" ADD CONSTRAINT "invoices_org_number_uq" UNIQUE ("organization_id","invoice_number");
+-- Invoice numbers remain GLOBALLY unique (HQ HA-FOUND-001 PR #23 review #1); the
+-- pre-tenant global unique "invoices_invoice_number_unique" is preserved. No
+-- per-organization invoice-number constraint is added.

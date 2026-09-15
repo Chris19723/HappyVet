@@ -9,6 +9,8 @@ import {
   invoiceItems,
   inventoryItems,
   expenses,
+  staffMembers,
+  type StaffMember,
   type Expense,
   type ExpenseWithItem,
   type User,
@@ -38,7 +40,7 @@ import { eq, desc, and, sql, asc, gte, isNotNull } from "drizzle-orm";
 import { computeInvoiceTotals, computeInvoiceLineTotal } from "@shared/invoice";
 import { getDayRangeInTimeZone, getMonthRangeInTimeZone } from "@shared/time";
 import { PERSONAL_CATEGORY } from "@shared/expense";
-import { type TenantContext, requireBranch } from "./tenantContext";
+import { type TenantContext, requireBranch, requireActiveStaff } from "./tenantContext";
 
 // The clinic's timezone anchors "today" / "this month" on the dashboard.
 const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "America/Mexico_City";
@@ -82,29 +84,30 @@ export interface CreateInvoiceInput {
   }[];
 }
 
-// Per-organization invoice number sequence. The sequence name embeds the org id
-// so folios never collide or leak across tenants.
-async function reserveNextInvoiceNumber(tx: any, organizationId: string): Promise<string> {
-  const seqName = `invoice_number_seq_${organizationId.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"invnum_" + organizationId}))`);
-  await tx.execute(sql.raw(`create sequence if not exists "${seqName}" start with 1`));
+// GLOBAL invoice number sequence. Invoice folios are unique across the entire
+// system, not per-organization (HQ HA-FOUND-001 PR #23 review #1). A single
+// shared sequence + the global UNIQUE(invoice_number) constraint guarantee no
+// two invoices — in any tenant — ever share a folio.
+async function reserveNextInvoiceNumber(tx: any): Promise<string> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('ha_invoice_number_seq'))`);
+  await tx.execute(sql.raw(`create sequence if not exists "invoice_number_seq" start with 1`));
 
   const maxInvoiceResult: any = await tx.execute(sql`
     select coalesce(max(substring(invoice_number from 5)::bigint), 0) as max_number
     from invoices
-    where organization_id = ${organizationId} and invoice_number ~ '^INV-[0-9]{6}$'
+    where invoice_number ~ '^INV-[0-9]{6}$'
   `);
-  const sequenceState: any = await tx.execute(sql.raw(`select last_value, is_called from "${seqName}"`));
+  const sequenceState: any = await tx.execute(sql.raw(`select last_value, is_called from "invoice_number_seq"`));
 
   const maxExisting = Number(maxInvoiceResult?.rows?.[0]?.max_number ?? 0);
   const lastValue = Number(sequenceState?.rows?.[0]?.last_value ?? 1);
   const isCalled = Boolean(sequenceState?.rows?.[0]?.is_called);
 
   if (maxExisting > lastValue || (!isCalled && maxExisting >= lastValue)) {
-    await tx.execute(sql.raw(`select setval('"${seqName}"', ${maxExisting}, true)`));
+    await tx.execute(sql.raw(`select setval('"invoice_number_seq"', ${maxExisting}, true)`));
   }
 
-  const sequenceResult: any = await tx.execute(sql.raw(`select nextval('"${seqName}"') as nextval`));
+  const sequenceResult: any = await tx.execute(sql.raw(`select nextval('"invoice_number_seq"') as nextval`));
   const nextValue = sequenceResult?.rows?.[0]?.nextval;
   if (nextValue === undefined || nextValue === null) throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
   return `INV-${String(nextValue).padStart(6, "0")}`;
@@ -301,35 +304,43 @@ export class DatabaseStorage implements IStorage {
     ...row.appointments,
     patient: { ...row.patients!, owner: row.owners! },
     veterinarian: row.users ?? null,
+    staffMember: row.staff_members ?? null,
   });
 
   async getAppointments(ctx: TenantContext): Promise<AppointmentWithDetails[]> {
+    const branchId = requireBranch(ctx);
     return await db.select().from(appointments)
       .leftJoin(patients, eq(appointments.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(appointments.veterinarianId, users.id))
-      .where(eq(appointments.organizationId, ctx.organizationId))
+      .leftJoin(staffMembers, eq(appointments.staffMemberId, staffMembers.id))
+      .where(and(eq(appointments.organizationId, ctx.organizationId), eq(appointments.branchId, branchId)))
       .orderBy(desc(appointments.appointmentDate))
       .then((rows) => rows.map(this.mapAppt));
   }
 
   async getAppointment(ctx: TenantContext, id: string): Promise<AppointmentWithDetails | undefined> {
+    const branchId = requireBranch(ctx);
     const [result] = await db.select().from(appointments)
       .leftJoin(patients, eq(appointments.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(appointments.veterinarianId, users.id))
-      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId)));
+      .leftJoin(staffMembers, eq(appointments.staffMemberId, staffMembers.id))
+      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId), eq(appointments.branchId, branchId)));
     return result ? this.mapAppt(result) : undefined;
   }
 
   async getTodayAppointments(ctx: TenantContext): Promise<AppointmentWithDetails[]> {
+    const branchId = requireBranch(ctx);
     const { start, end } = getDayRangeInTimeZone(new Date(), CLINIC_TIMEZONE);
     return await db.select().from(appointments)
       .leftJoin(patients, eq(appointments.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(appointments.veterinarianId, users.id))
+      .leftJoin(staffMembers, eq(appointments.staffMemberId, staffMembers.id))
       .where(and(
         eq(appointments.organizationId, ctx.organizationId),
+        eq(appointments.branchId, branchId),
         sql`${appointments.appointmentDate} >= ${start}`,
         sql`${appointments.appointmentDate} < ${end}`,
       ))
@@ -351,6 +362,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateAppointment(ctx: TenantContext, id: string, appointment: Partial<InsertAppointment>): Promise<Appointment | undefined> {
+    const branchId = requireBranch(ctx);
     const { organizationId: _o, branchId: _b, ...patch } = appointment as any;
     if (patch.patientId) {
       const patient = await this.getPatient(ctx, patch.patientId);
@@ -358,14 +370,15 @@ export class DatabaseStorage implements IStorage {
     }
     const [updated] = await db.update(appointments)
       .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId)))
+      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId), eq(appointments.branchId, branchId)))
       .returning();
     return updated;
   }
 
   async deleteAppointment(ctx: TenantContext, id: string): Promise<void> {
+    const branchId = requireBranch(ctx);
     await db.delete(appointments)
-      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId)));
+      .where(and(eq(appointments.id, id), eq(appointments.organizationId, ctx.organizationId), eq(appointments.branchId, branchId)));
   }
 
   // ---- Medical records ----
@@ -373,50 +386,61 @@ export class DatabaseStorage implements IStorage {
     ...row.medical_records,
     patient: { ...row.patients!, owner: row.owners! },
     veterinarian: row.users ?? null,
+    staffMember: row.staff_members ?? null,
   });
 
   async getMedicalRecords(ctx: TenantContext): Promise<MedicalRecordWithDetails[]> {
+    const branchId = requireBranch(ctx);
     return await db.select().from(medicalRecords)
       .leftJoin(patients, eq(medicalRecords.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(medicalRecords.veterinarianId, users.id))
-      .where(eq(medicalRecords.organizationId, ctx.organizationId))
+      .leftJoin(staffMembers, eq(medicalRecords.veterinarianStaffMemberId, staffMembers.id))
+      .where(and(eq(medicalRecords.organizationId, ctx.organizationId), eq(medicalRecords.branchId, branchId)))
       .orderBy(desc(medicalRecords.date))
       .then((rows) => rows.map(this.mapRecord));
   }
 
   async getMedicalRecord(ctx: TenantContext, id: string): Promise<MedicalRecordWithDetails | undefined> {
+    const branchId = requireBranch(ctx);
     const [result] = await db.select().from(medicalRecords)
       .leftJoin(patients, eq(medicalRecords.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(medicalRecords.veterinarianId, users.id))
-      .where(and(eq(medicalRecords.id, id), eq(medicalRecords.organizationId, ctx.organizationId)));
+      .leftJoin(staffMembers, eq(medicalRecords.veterinarianStaffMemberId, staffMembers.id))
+      .where(and(eq(medicalRecords.id, id), eq(medicalRecords.organizationId, ctx.organizationId), eq(medicalRecords.branchId, branchId)));
     return result ? this.mapRecord(result) : undefined;
   }
 
   async getPatientMedicalRecords(ctx: TenantContext, patientId: string): Promise<MedicalRecordWithDetails[]> {
+    const branchId = requireBranch(ctx);
     return await db.select().from(medicalRecords)
       .leftJoin(patients, eq(medicalRecords.patientId, patients.id))
       .leftJoin(owners, eq(patients.ownerId, owners.id))
       .leftJoin(users, eq(medicalRecords.veterinarianId, users.id))
-      .where(and(eq(medicalRecords.patientId, patientId), eq(medicalRecords.organizationId, ctx.organizationId)))
+      .leftJoin(staffMembers, eq(medicalRecords.veterinarianStaffMemberId, staffMembers.id))
+      .where(and(eq(medicalRecords.patientId, patientId), eq(medicalRecords.organizationId, ctx.organizationId), eq(medicalRecords.branchId, branchId)))
       .orderBy(desc(medicalRecords.date))
       .then((rows) => rows.map(this.mapRecord));
   }
 
   async createMedicalRecord(ctx: TenantContext, record: InsertMedicalRecord): Promise<MedicalRecord> {
+    const branchId = requireBranch(ctx);
+    // Clinical author MUST be an active StaffMember tied to the acting user
+    // (HQ #6): a record is never created with a null author.
+    const staffMemberId = requireActiveStaff(ctx);
     const patient = await this.getPatient(ctx, record.patientId);
     if (!patient) throw new CrossTenantError("patient");
     if (record.appointmentId) {
       const appt = await this.getAppointment(ctx, record.appointmentId);
       if (!appt) throw new CrossTenantError("appointment");
     }
-    // Author is the acting user's StaffMember, derived server-side (SEC-GAP-03).
+    // Author + branch are derived server-side (SEC-GAP-03), never from input.
     const [created] = await db.insert(medicalRecords).values({
       ...record,
       organizationId: ctx.organizationId,
-      branchId: ctx.branchId ?? null,
-      veterinarianStaffMemberId: ctx.staffMemberId ?? null,
+      branchId,
+      veterinarianStaffMemberId: staffMemberId,
       veterinarianId: null,
     }).returning();
     return created;
@@ -457,10 +481,11 @@ export class DatabaseStorage implements IStorage {
 
   // ---- Invoices ----
   async getInvoices(ctx: TenantContext): Promise<InvoiceWithDetails[]> {
+    const branchId = requireBranch(ctx);
     const rows = await db.select().from(invoices)
       .leftJoin(owners, eq(invoices.ownerId, owners.id))
       .leftJoin(patients, eq(invoices.patientId, patients.id))
-      .where(eq(invoices.organizationId, ctx.organizationId))
+      .where(and(eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId)))
       .orderBy(desc(invoices.issueDate));
 
     const result: InvoiceWithDetails[] = [];
@@ -479,10 +504,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getInvoice(ctx: TenantContext, id: string): Promise<InvoiceWithDetails | undefined> {
+    const branchId = requireBranch(ctx);
     const [invoiceResult] = await db.select().from(invoices)
       .leftJoin(owners, eq(invoices.ownerId, owners.id))
       .leftJoin(patients, eq(invoices.patientId, patients.id))
-      .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId)));
+      .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId)));
     if (!invoiceResult) return undefined;
 
     const items = await db.select().from(invoiceItems)
@@ -498,8 +524,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getInvoiceByAppointment(ctx: TenantContext, appointmentId: string): Promise<Invoice | undefined> {
+    const branchId = requireBranch(ctx);
     const [invoice] = await db.select().from(invoices)
-      .where(and(eq(invoices.appointmentId, appointmentId), eq(invoices.organizationId, ctx.organizationId)))
+      .where(and(eq(invoices.appointmentId, appointmentId), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId)))
       .orderBy(desc(invoices.issueDate)).limit(1);
     return invoice;
   }
@@ -524,7 +551,7 @@ export class DatabaseStorage implements IStorage {
       if (input.appointmentId) {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.appointmentId}))`);
         const [appt] = await tx.select({ id: appointments.id }).from(appointments)
-          .where(and(eq(appointments.id, input.appointmentId), eq(appointments.organizationId, org))).limit(1);
+          .where(and(eq(appointments.id, input.appointmentId), eq(appointments.organizationId, org), eq(appointments.branchId, branchId))).limit(1);
         if (!appt) throw new CrossTenantError("appointment");
         const [existing] = await tx.select({ id: invoices.id }).from(invoices)
           .where(and(eq(invoices.appointmentId, input.appointmentId), eq(invoices.organizationId, org))).limit(1);
@@ -543,7 +570,7 @@ export class DatabaseStorage implements IStorage {
         }
         if (it.inventoryItemId) {
           const [product] = await tx.select({ price: inventoryItems.unitPrice }).from(inventoryItems)
-            .where(and(eq(inventoryItems.id, it.inventoryItemId), eq(inventoryItems.organizationId, org))).limit(1);
+            .where(and(eq(inventoryItems.id, it.inventoryItemId), eq(inventoryItems.organizationId, org), eq(inventoryItems.branchId, branchId))).limit(1);
           if (!product) throw new CrossTenantError("inventory");
           unitPrice = Number(product.price ?? 0);
           productQty.set(it.inventoryItemId, (productQty.get(it.inventoryItemId) ?? 0) + it.quantity);
@@ -565,7 +592,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(resolvedItems, input.taxRate ?? 0);
-      const invoiceNumber = await reserveNextInvoiceNumber(tx, org);
+      const invoiceNumber = await reserveNextInvoiceNumber(tx);
 
       const [created] = await tx.insert(invoices).values({
         organizationId: org,
@@ -622,15 +649,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateInvoice(ctx: TenantContext, id: string, invoice: Partial<InsertInvoice>): Promise<Invoice | undefined> {
+    const branchId = requireBranch(ctx);
     const { organizationId: _o, branchId: _b, ...patch } = invoice as any;
     return await db.transaction(async (tx) => {
       const [current] = await tx.select({ status: invoices.status }).from(invoices)
-        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId))).limit(1);
+        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId))).limit(1);
       if (!current) return undefined;
 
       const [updated] = await tx.update(invoices)
         .set({ ...patch, updatedAt: new Date() })
-        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId)))
+        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId)))
         .returning();
 
       const wasCancelled = current?.status === "cancelled";
@@ -643,35 +671,40 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInvoice(ctx: TenantContext, id: string): Promise<void> {
+    const branchId = requireBranch(ctx);
     await db.transaction(async (tx) => {
       const [current] = await tx.select({ status: invoices.status }).from(invoices)
-        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId))).limit(1);
+        .where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId))).limit(1);
       if (!current) return;
       if (current.status !== "cancelled") {
         await this.restoreStockForInvoice(tx, ctx.organizationId, id);
       }
       await tx.delete(invoiceItems).where(and(eq(invoiceItems.invoiceId, id), eq(invoiceItems.organizationId, ctx.organizationId)));
-      await tx.delete(invoices).where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId)));
+      await tx.delete(invoices).where(and(eq(invoices.id, id), eq(invoices.organizationId, ctx.organizationId), eq(invoices.branchId, branchId)));
     });
   }
 
   // ---- Inventory ----
   async getInventoryItems(ctx: TenantContext): Promise<InventoryItem[]> {
+    const branchId = requireBranch(ctx);
     return await db.select().from(inventoryItems)
-      .where(and(eq(inventoryItems.organizationId, ctx.organizationId), eq(inventoryItems.isActive, true)))
+      .where(and(eq(inventoryItems.organizationId, ctx.organizationId), eq(inventoryItems.branchId, branchId), eq(inventoryItems.isActive, true)))
       .orderBy(asc(inventoryItems.name));
   }
 
   async getInventoryItem(ctx: TenantContext, id: string): Promise<InventoryItem | undefined> {
+    const branchId = requireBranch(ctx);
     const [item] = await db.select().from(inventoryItems)
-      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId)));
+      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId), eq(inventoryItems.branchId, branchId)));
     return item;
   }
 
   async getLowStockItems(ctx: TenantContext): Promise<InventoryItem[]> {
+    const branchId = requireBranch(ctx);
     return await db.select().from(inventoryItems)
       .where(and(
         eq(inventoryItems.organizationId, ctx.organizationId),
+        eq(inventoryItems.branchId, branchId),
         eq(inventoryItems.isActive, true),
         sql`${inventoryItems.currentStock} <= ${inventoryItems.minStock}`,
       ))
@@ -685,24 +718,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateInventoryItem(ctx: TenantContext, id: string, item: Partial<InsertInventoryItem>): Promise<InventoryItem | undefined> {
+    const branchId = requireBranch(ctx);
     const { organizationId: _o, branchId: _b, ...patch } = item as any;
     const [updated] = await db.update(inventoryItems)
       .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId)))
+      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId), eq(inventoryItems.branchId, branchId)))
       .returning();
     return updated;
   }
 
   async deleteInventoryItem(ctx: TenantContext, id: string): Promise<void> {
+    const branchId = requireBranch(ctx);
     await db.update(inventoryItems).set({ isActive: false })
-      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId)));
+      .where(and(eq(inventoryItems.id, id), eq(inventoryItems.organizationId, ctx.organizationId), eq(inventoryItems.branchId, branchId)));
   }
 
   // ---- Expenses ----
   async getExpenses(ctx: TenantContext, range?: { start: Date; end: Date }): Promise<ExpenseWithItem[]> {
+    const branchId = requireBranch(ctx);
     const where = range
-      ? and(eq(expenses.organizationId, ctx.organizationId), sql`${expenses.date} >= ${range.start}`, sql`${expenses.date} < ${range.end}`)
-      : eq(expenses.organizationId, ctx.organizationId);
+      ? and(eq(expenses.organizationId, ctx.organizationId), eq(expenses.branchId, branchId), sql`${expenses.date} >= ${range.start}`, sql`${expenses.date} < ${range.end}`)
+      : and(eq(expenses.organizationId, ctx.organizationId), eq(expenses.branchId, branchId));
     const rows = await db.select().from(expenses)
       .leftJoin(inventoryItems, eq(expenses.inventoryItemId, inventoryItems.id))
       .where(where)
@@ -742,9 +778,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteExpense(ctx: TenantContext, id: string): Promise<void> {
+    const branchId = requireBranch(ctx);
     await db.transaction(async (tx) => {
       const [expense] = await tx.select({ inventoryItemId: expenses.inventoryItemId, quantity: expenses.quantity }).from(expenses)
-        .where(and(eq(expenses.id, id), eq(expenses.organizationId, ctx.organizationId))).limit(1);
+        .where(and(eq(expenses.id, id), eq(expenses.organizationId, ctx.organizationId), eq(expenses.branchId, branchId))).limit(1);
       if (!expense) return;
       if (expense.inventoryItemId && expense.quantity && expense.quantity > 0) {
         await tx.update(inventoryItems)

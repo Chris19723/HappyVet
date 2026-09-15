@@ -98,7 +98,12 @@ export const staffMembers = pgTable(
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },
-  (t) => [unique("staff_members_id_org_uq").on(t.id, t.organizationId)],
+  (t) => [
+    unique("staff_members_id_org_uq").on(t.id, t.organizationId),
+    // Structural target for the Membership↔StaffMember identity FK: a Membership
+    // may only reference a StaffMember that belongs to the SAME user (HQ #6).
+    unique("staff_members_id_user_uq").on(t.id, t.userId),
+  ],
 );
 
 // Membership: connects a User to an Organization and is the AUTHORITATIVE
@@ -123,6 +128,14 @@ export const memberships = pgTable(
       columns: [t.staffMemberId, t.organizationId],
       foreignColumns: [staffMembers.id, staffMembers.organizationId],
       name: "memberships_staff_org_fk",
+    }),
+    // Identity integrity: when a Membership links a StaffMember, that staff row
+    // must belong to the SAME user as the Membership (HQ #6). MATCH SIMPLE means
+    // this is only enforced when staffMemberId is set (both columns non-null).
+    foreignKey({
+      columns: [t.staffMemberId, t.userId],
+      foreignColumns: [staffMembers.id, staffMembers.userId],
+      name: "memberships_staff_user_fk",
     }),
   ],
 );
@@ -209,6 +222,7 @@ export const appointments = pgTable(
   },
   (t) => [
     unique("appointments_id_org_uq").on(t.id, t.organizationId),
+    unique("appointments_id_org_branch_uq").on(t.id, t.organizationId, t.branchId),
     index("appointments_org_idx").on(t.organizationId),
     foreignKey({
       columns: [t.branchId, t.organizationId],
@@ -235,7 +249,7 @@ export const medicalRecords = pgTable(
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     organizationId: varchar("organization_id").notNull().references(() => organizations.id),
-    branchId: varchar("branch_id"),
+    branchId: varchar("branch_id").notNull(),
     patientId: varchar("patient_id").notNull(),
     veterinarianId: varchar("veterinarian_id").references(() => users.id), // LEGACY, nullable
     veterinarianStaffMemberId: varchar("veterinarian_staff_member_id"), // author (tenant)
@@ -255,10 +269,11 @@ export const medicalRecords = pgTable(
       foreignColumns: [patients.id, patients.organizationId],
       name: "medical_records_patient_org_fk",
     }),
+    // Branch-aware: a record's appointment (when set) must share org + branch.
     foreignKey({
-      columns: [t.appointmentId, t.organizationId],
-      foreignColumns: [appointments.id, appointments.organizationId],
-      name: "medical_records_appointment_org_fk",
+      columns: [t.appointmentId, t.organizationId, t.branchId],
+      foreignColumns: [appointments.id, appointments.organizationId, appointments.branchId],
+      name: "medical_records_appointment_org_branch_fk",
     }),
     foreignKey({
       columns: [t.branchId, t.organizationId],
@@ -315,6 +330,7 @@ export const inventoryItems = pgTable(
   },
   (t) => [
     unique("inventory_items_id_org_uq").on(t.id, t.organizationId),
+    unique("inventory_items_id_org_branch_uq").on(t.id, t.organizationId, t.branchId),
     index("inventory_items_org_idx").on(t.organizationId),
     foreignKey({
       columns: [t.branchId, t.organizationId],
@@ -331,7 +347,7 @@ export const invoices = pgTable(
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     organizationId: varchar("organization_id").notNull().references(() => organizations.id),
     branchId: varchar("branch_id").notNull(),
-    invoiceNumber: varchar("invoice_number").notNull(), // unique PER organization (see below)
+    invoiceNumber: varchar("invoice_number").notNull().unique(), // GLOBAL uniqueness (HQ HA-FOUND-001)
     ownerId: varchar("owner_id").notNull(),
     patientId: varchar("patient_id"),
     appointmentId: varchar("appointment_id"),
@@ -349,7 +365,7 @@ export const invoices = pgTable(
   },
   (t) => [
     unique("invoices_id_org_uq").on(t.id, t.organizationId),
-    unique("invoices_org_number_uq").on(t.organizationId, t.invoiceNumber),
+    unique("invoices_id_org_branch_uq").on(t.id, t.organizationId, t.branchId),
     index("invoices_org_idx").on(t.organizationId),
     foreignKey({
       columns: [t.branchId, t.organizationId],
@@ -366,10 +382,11 @@ export const invoices = pgTable(
       foreignColumns: [patients.id, patients.organizationId],
       name: "invoices_patient_org_fk",
     }),
+    // Branch-aware: an invoice's appointment (when set) must share org + branch.
     foreignKey({
-      columns: [t.appointmentId, t.organizationId],
-      foreignColumns: [appointments.id, appointments.organizationId],
-      name: "invoices_appointment_org_fk",
+      columns: [t.appointmentId, t.organizationId, t.branchId],
+      foreignColumns: [appointments.id, appointments.organizationId, appointments.branchId],
+      name: "invoices_appointment_org_branch_fk",
     }),
   ],
 );
@@ -392,10 +409,11 @@ export const invoiceItems = pgTable(
   },
   (t) => [
     index("invoice_items_org_idx").on(t.organizationId),
+    // Branch-aware: an item's invoice must share org + branch.
     foreignKey({
-      columns: [t.invoiceId, t.organizationId],
-      foreignColumns: [invoices.id, invoices.organizationId],
-      name: "invoice_items_invoice_org_fk",
+      columns: [t.invoiceId, t.organizationId, t.branchId],
+      foreignColumns: [invoices.id, invoices.organizationId, invoices.branchId],
+      name: "invoice_items_invoice_org_branch_fk",
     }),
     foreignKey({
       columns: [t.branchId, t.organizationId],
@@ -407,10 +425,11 @@ export const invoiceItems = pgTable(
       foreignColumns: [treatments.id, treatments.organizationId],
       name: "invoice_items_treatment_org_fk",
     }),
+    // Branch-aware: an item's inventory item (when set) must share org + branch.
     foreignKey({
-      columns: [t.inventoryItemId, t.organizationId],
-      foreignColumns: [inventoryItems.id, inventoryItems.organizationId],
-      name: "invoice_items_inventory_org_fk",
+      columns: [t.inventoryItemId, t.organizationId, t.branchId],
+      foreignColumns: [inventoryItems.id, inventoryItems.organizationId, inventoryItems.branchId],
+      name: "invoice_items_inventory_org_branch_fk",
     }),
   ],
 );
@@ -441,10 +460,11 @@ export const expenses = pgTable(
       foreignColumns: [branches.id, branches.organizationId],
       name: "expenses_branch_org_fk",
     }),
+    // Branch-aware: an expense's inventory item (when set) must share org + branch.
     foreignKey({
-      columns: [t.inventoryItemId, t.organizationId],
-      foreignColumns: [inventoryItems.id, inventoryItems.organizationId],
-      name: "expenses_inventory_org_fk",
+      columns: [t.inventoryItemId, t.organizationId, t.branchId],
+      foreignColumns: [inventoryItems.id, inventoryItems.organizationId, inventoryItems.branchId],
+      name: "expenses_inventory_org_branch_fk",
     }),
   ],
 );
@@ -585,6 +605,7 @@ export type Appointment = typeof appointments.$inferSelect;
 export type AppointmentWithDetails = Appointment & {
   patient: PatientWithOwner;
   veterinarian: User | null;
+  staffMember: StaffMember | null; // tenant-owned clinician (preferred display)
 };
 
 export type InsertMedicalRecord = z.infer<typeof insertMedicalRecordSchema>;
@@ -592,6 +613,7 @@ export type MedicalRecord = typeof medicalRecords.$inferSelect;
 export type MedicalRecordWithDetails = MedicalRecord & {
   patient: PatientWithOwner;
   veterinarian: User | null;
+  staffMember: StaffMember | null; // tenant-owned clinician (preferred display)
 };
 
 export type InsertTreatment = z.infer<typeof insertTreatmentSchema>;

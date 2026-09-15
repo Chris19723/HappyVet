@@ -22,10 +22,72 @@ import pg from "pg";
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
+const BASELINE_FILE = "0000_baseline.sql";
+
+// The pre-tenant ("baseline") schema and the key columns that prove a legacy DB
+// really is at the baseline. Used to ADOPT an existing legacy database into the
+// versioned-migration system without re-running 0000 (which would fail on
+// already-existing objects). Verification is fail-closed.
+const BASELINE_TABLES: Record<string, string[]> = {
+  sessions: ["sid", "sess", "expire"],
+  users: ["id", "email", "role"],
+  owners: ["id", "first_name", "last_name"],
+  patients: ["id", "name", "species", "owner_id"],
+  appointments: ["id", "patient_id", "veterinarian_id", "appointment_date"],
+  medical_records: ["id", "patient_id", "veterinarian_id"],
+  treatments: ["id", "name", "price"],
+  inventory_items: ["id", "name", "current_stock"],
+  invoices: ["id", "invoice_number", "owner_id", "total_amount"],
+  invoice_items: ["id", "invoice_id", "total_price"],
+  expenses: ["id", "amount", "category"],
+};
+
 function migrationFiles(): string[] {
   return readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))
     .sort();
+}
+
+/**
+ * Baseline adoption (HQ #2). Decides how to treat 0000_baseline.sql:
+ *   - already recorded          → no-op
+ *   - no baseline tables present → fresh DB; 0000 will be applied normally
+ *   - ALL baseline tables + key columns present → record 0000 as adopted WITHOUT
+ *     running its SQL (the legacy schema already IS the baseline)
+ *   - a partial/unknown legacy schema → THROW (fail closed)
+ * Never runs baseline DDL and never touches tenant migrations.
+ */
+export async function adoptBaseline(client: pg.Client): Promise<{ adopted: boolean; reason: string }> {
+  const rec = await client.query(`SELECT 1 FROM "_ha_migrations" WHERE name = $1`, [BASELINE_FILE]);
+  if ((rec.rowCount ?? 0) > 0) return { adopted: false, reason: "already-recorded" };
+
+  const names = Object.keys(BASELINE_TABLES);
+  const existing = await client.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name = ANY($1)`, [names]);
+  const present = new Set(existing.rows.map((r) => r.table_name));
+
+  if (present.size === 0) return { adopted: false, reason: "fresh-db" };
+
+  const missing = names.filter((n) => !present.has(n));
+  if (missing.length > 0) {
+    throw new Error(
+      `BASELINE_ADOPTION_FAILED: legacy schema is partial/unknown (missing tables: ${missing.join(", ")}). Refusing to adopt (fail closed).`);
+  }
+  for (const [t, cols] of Object.entries(BASELINE_TABLES)) {
+    const colRes = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1`, [t]);
+    const have = new Set(colRes.rows.map((r) => r.column_name));
+    const missCols = cols.filter((c) => !have.has(c));
+    if (missCols.length > 0) {
+      throw new Error(
+        `BASELINE_ADOPTION_FAILED: table "${t}" is missing expected baseline columns: ${missCols.join(", ")}. Refusing to adopt (fail closed).`);
+    }
+  }
+  // The legacy schema matches the baseline — record it as applied, do NOT run it.
+  await client.query(`INSERT INTO "_ha_migrations"(name) VALUES ($1)`, [BASELINE_FILE]);
+  return { adopted: true, reason: "legacy-verified" };
 }
 
 export async function runMigrations(opts: { to?: string; status?: boolean } = {}) {
@@ -40,14 +102,23 @@ export async function runMigrations(opts: { to?: string; status?: boolean } = {}
         "applied_at" timestamptz NOT NULL DEFAULT now()
       );
     `);
-    const appliedRes = await client.query<{ name: string }>(`SELECT name FROM "_ha_migrations"`);
-    const applied = new Set(appliedRes.rows.map((r) => r.name));
     const files = migrationFiles();
 
     if (opts.status) {
-      for (const f of files) console.log(`${applied.has(f) ? "APPLIED " : "PENDING "} ${f}`);
-      return { applied: [...applied], pending: files.filter((f) => !applied.has(f)) };
+      const appliedResS = await client.query<{ name: string }>(`SELECT name FROM "_ha_migrations"`);
+      const appliedS = new Set(appliedResS.rows.map((r) => r.name));
+      for (const f of files) console.log(`${appliedS.has(f) ? "APPLIED " : "PENDING "} ${f}`);
+      return { applied: [...appliedS], pending: files.filter((f) => !appliedS.has(f)) };
     }
+
+    // Baseline adoption runs before applying files: on a legacy DB it records
+    // 0000 as adopted without executing it; on a fresh DB it is a no-op and 0000
+    // is applied normally below; on a partial/unknown schema it throws.
+    const baseline = await adoptBaseline(client);
+    if (baseline.adopted) console.log(`adopted baseline (${baseline.reason}): ${BASELINE_FILE}`);
+
+    const appliedRes = await client.query<{ name: string }>(`SELECT name FROM "_ha_migrations"`);
+    const applied = new Set(appliedRes.rows.map((r) => r.name));
 
     const newlyApplied: string[] = [];
     for (const file of files) {
