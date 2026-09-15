@@ -10,7 +10,15 @@
     "check": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:push": "drizzle-kit push"
+    "test:tenant": "vitest run tests/tenant-isolation.test.ts tests/tenant-migration.test.ts tests/tenant-baseline-users.test.ts --no-file-parallelism",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate:status": "tsx scripts/migrate.ts --status",
+    "tenant:bootstrap": "tsx scripts/bootstrap-tenant.ts",
+    "tenant:preflight": "tsx scripts/preflight-users.ts",
+    "tenant:backfill": "tsx scripts/backfill-tenant.ts",
+    "tenant:migrate-users": "tsx scripts/migrate-users.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.17.0",

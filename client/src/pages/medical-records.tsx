@@ -184,7 +184,11 @@ export default function MedicalRecords() {
                       )}
                       
                       <div className="text-sm text-slate-500 pt-2 border-t">
-                        Atendido por: Dr. {record.veterinarian.firstName} {record.veterinarian.lastName}
+                        {record.staffMember
+                          ? `Atendido por: ${record.staffMember.displayName}`
+                          : record.veterinarian
+                            ? `Atendido por: Dr. ${record.veterinarian.firstName ?? ""} ${record.veterinarian.lastName ?? ""}`
+                            : "Atendido por: —"}
                       </div>
                     </div>
                   </CardContent>
